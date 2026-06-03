@@ -23,8 +23,12 @@ jobs:
         with:
           version: 9
 
+      - name: Nuke broken workspace config
+        run: |
+          if (Test-Path "pnpm-workspace.yaml") { Remove-Item "pnpm-workspace.yaml" }
+
       - name: install frontend dependencies
-        run: pnpm install --ignore-workspace --no-frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build and release
         uses: tauri-apps/tauri-action@v0
@@ -36,4 +40,3 @@ jobs:
           releaseBody: 'Fixed Splice GraphQL API Apollo headers.'
           releaseDraft: true
           prerelease: false
-          args: --ignore-workspace
