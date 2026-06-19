@@ -15,6 +15,8 @@ import { globalAudio } from "./audio.svelte"
 import { loading } from "./loading.svelte"
 import { config } from "./config.svelte"
 import { fetch } from "@tauri-apps/plugin-http"
+import { getBlobFromLikedCache } from "./liked-cache"
+import { network } from "./network.svelte"
 import { writeFile } from "@tauri-apps/plugin-fs"
 import { pitchShiftAudioBuffer, semitonesFor } from "./transpose.svelte"
 import { audioBufferToWav, decodeAudioFromURL } from "./wav"
@@ -95,6 +97,7 @@ export const storeCallbacks = $state({
 let currentQueryIdentity: string = ""
 
 export const fetchAssets = () => {
+    if (!network.online) return
     const identityBeforeFetch = JSON.stringify(queryIdentity)
     if (identityBeforeFetch != currentQueryIdentity) {
         storeCallbacks.onbeforedataupdate?.()
@@ -180,6 +183,15 @@ export async function getDescrambledSampleURL(sampleAsset: SampleAsset) {
         dataStore.descrambledSamples.set(sampleAsset.uuid, blobURL)
         console.info("🔗 Created descrambled sample blob")
         return blobURL
+    } catch (networkError) {
+        // Offline fallback: play from the local liked-cache if available.
+        const cachedUrl = await getBlobFromLikedCache(sampleAsset.uuid)
+        if (cachedUrl) {
+            dataStore.descrambledSamples.set(sampleAsset.uuid, cachedUrl)
+            console.info("📁 Playing liked sample from local cache")
+            return cachedUrl
+        }
+        throw networkError
     } finally {
         loading.samples.delete(sampleAsset.uuid)
         loading.samplesCount--
@@ -342,6 +354,15 @@ export const packDetailStore = $state({
     loading: false,
     downloading: false,
     downloadProgress: null as { done: number; total: number } | null,
+    // Search / filter / sort — reset whenever a new pack is opened
+    query: "",
+    sort: "popularity" as AssetSortType,
+    order: "DESC" as SortOrder,
+    key: null as Key | null,
+    chord_type: null as ChordType | null,
+    min_bpm: null as number | null,
+    max_bpm: null as number | null,
+    asset_category_slug: null as AssetCategorySlug | null,
 })
 
 export function openPackDetail(pack: PackAsset) {
@@ -349,31 +370,52 @@ export function openPackDetail(pack: PackAsset) {
     packDetailStore.samples = []
     packDetailStore.total_records = 0
     packDetailStore.page = 1
+    packDetailStore.query = ""
+    packDetailStore.sort = "popularity"
+    packDetailStore.order = "DESC"
+    packDetailStore.key = null
+    packDetailStore.chord_type = null
+    packDetailStore.min_bpm = null
+    packDetailStore.max_bpm = null
+    packDetailStore.asset_category_slug = null
     packDetailStore.open = true
     fetchPackSamples()
 }
 
+/** Reset to page 1 and re-fetch after a filter/sort/search change. */
+export function refreshPackSamples() {
+    packDetailStore.samples = []
+    packDetailStore.total_records = 0
+    packDetailStore.page = 1
+    fetchPackSamples()
+}
+
+// Incremented on every refresh so stale in-flight responses are ignored.
+let packFetchVersion = 0
+
 export function fetchPackSamples() {
     if (!packDetailStore.pack) return
     packDetailStore.loading = true
+    const version = ++packFetchVersion
     querySplice(SamplesSearch, {
         parent_asset_uuid: packDetailStore.pack.uuid,
         page: packDetailStore.page,
         limit: PER_PAGE,
-        sort: "popularity",
-        order: "DESC",
+        sort: packDetailStore.sort,
+        order: packDetailStore.order,
         random_seed: null,
-        query: null,
+        query: packDetailStore.query || null,
         tags: [],
-        key: null,
-        chord_type: null,
+        key: packDetailStore.key,
+        chord_type: packDetailStore.chord_type,
         bpm: null,
-        min_bpm: null,
-        max_bpm: null,
-        asset_category_slug: null,
+        min_bpm: packDetailStore.min_bpm,
+        max_bpm: packDetailStore.max_bpm,
+        asset_category_slug: packDetailStore.asset_category_slug,
         ac_uuid: null,
     })
         .then((response) => {
+            if (version !== packFetchVersion) return // stale response — discard
             const result = (response as SamplesSearchResponse).data.assetsSearch
             const newItems = result.items.filter(
                 (item) => !packDetailStore.samples.some((s) => s.uuid === item.uuid)

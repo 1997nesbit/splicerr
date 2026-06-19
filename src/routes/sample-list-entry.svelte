@@ -33,11 +33,12 @@
         removeSample,
         isSampleInCollection,
         userCollections,
-        toggleLike,
-        isLiked,
+        collectionsStore,
+        likesCollection,
         openNewCollectionDialog,
         LIKES_UUID,
     } from "$lib/shared/collections.svelte"
+    import Library from "lucide-svelte/icons/library"
 
     let {
         class: className,
@@ -57,7 +58,10 @@
     } = $props()
 
     let menuOpen = $state(false)
-    const liked = $derived(isLiked(sampleAsset.uuid))
+    let heartPickerOpen = $state(false)
+    const inAnyCollection = $derived(
+        collectionsStore.collections.some((c) => isSampleInCollection(c.uuid, sampleAsset.uuid))
+    )
     const isLoading = $derived(
         (selected && globalAudio.loading) || !!(loading.samplesCount && loading.samples.has(sampleAsset.uuid))
     )
@@ -248,15 +252,58 @@
         >
             <Download size="16" />
         </Button>
-        <Button
-            variant="ghost"
-            size="icon"
-            class={cn("size-8", liked ? "text-foreground" : "text-muted-foreground")}
-            title={liked ? "Remove like" : "Like"}
-            onclick={() => toggleLike(sampleAsset)}
-        >
-            <Heart size="16" fill={liked ? "currentColor" : "none"} />
-        </Button>
+        {#if collectionUuid}
+            <Button
+                variant="ghost"
+                size="icon"
+                class="size-8 text-muted-foreground hover:text-destructive"
+                title="Remove from collection"
+                onclick={() => onremove?.()}
+            >
+                <Trash2 size="16" />
+            </Button>
+        {/if}
+        <Popover.Root bind:open={heartPickerOpen}>
+            <Popover.Trigger
+                class={cn(
+                    buttonVariants({ variant: "ghost", size: "icon" }),
+                    "size-8",
+                    inAnyCollection ? "text-foreground" : "text-muted-foreground"
+                )}
+                title="Save to collection"
+            >
+                <Heart size="16" fill={inAnyCollection ? "currentColor" : "none"} />
+            </Popover.Trigger>
+            <Popover.Content class="w-56 p-1" align="end" side="left">
+                <div class="flex flex-col max-h-56 overflow-y-auto">
+                    {#each collectionsStore.collections as collection (collection.uuid)}
+                        {@const inIt = isSampleInCollection(collection.uuid, sampleAsset.uuid)}
+                        <button
+                            class="flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted text-left"
+                            onclick={() => { toggleInCollection(collection.uuid); heartPickerOpen = false }}
+                        >
+                            <span class="flex-shrink-0 size-4 flex items-center justify-center">
+                                {#if inIt}<Check size="14" />{/if}
+                            </span>
+                            {#if collection.uuid === LIKES_UUID}
+                                <Heart size="14" />
+                            {:else}
+                                <Library size="14" />
+                            {/if}
+                            <span class="truncate flex-grow">{collection.name}</span>
+                        </button>
+                    {/each}
+                </div>
+                <div class="border-t border-border mt-1 pt-1">
+                    <button
+                        class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted text-left"
+                        onclick={() => { heartPickerOpen = false; openNewCollectionDialog(sampleAsset) }}
+                    >
+                        <Plus size="16" /> New collection
+                    </button>
+                </div>
+            </Popover.Content>
+        </Popover.Root>
 
         <Popover.Root
             bind:open={menuOpen}
@@ -281,7 +328,7 @@
                     >
                         <ListPlus size="16" /> Add to collection
                     </button>
-                    {#if collectionUuid && collectionUuid !== LIKES_UUID}
+                    {#if collectionUuid}
                         <button
                             class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-destructive hover:bg-muted text-left"
                             onclick={() => {

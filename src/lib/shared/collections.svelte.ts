@@ -12,6 +12,7 @@ import type {
     SampleAsset,
 } from "$lib/splice/types"
 import { AssetFilesByUuids, querySplice } from "$lib/splice/api"
+import { saveLikedSampleLocally, deleteLikedCache } from "./liked-cache"
 
 const COLLECTIONS_FILE_NAME = "collections.json"
 
@@ -167,8 +168,13 @@ export function addSample(colUuid: string, asset: SampleAsset) {
     if (!collection.sample_uuids.includes(asset.uuid)) {
         collection.sample_uuids.push(asset.uuid)
     }
-    collection.samples[asset.uuid] = $state.snapshot(asset) as SampleAsset
+    const snapshot = $state.snapshot(asset) as SampleAsset
+    collection.samples[asset.uuid] = snapshot
     saveCollections()
+    // Background-download any saved sample so it plays back offline regardless of collection.
+    saveLikedSampleLocally(snapshot).catch((e) =>
+        console.warn("⚠️ Failed to locally cache sample", e)
+    )
 }
 
 export function removeSample(colUuid: string, sampleUuid: string) {
@@ -178,6 +184,13 @@ export function removeSample(colUuid: string, sampleUuid: string) {
     if (index != -1) collection.sample_uuids.splice(index, 1)
     delete collection.samples[sampleUuid]
     saveCollections()
+    // If the sample is no longer in any collection, reclaim the local cache file.
+    const stillSaved = collectionsStore.collections.some((c) =>
+        c.sample_uuids.includes(sampleUuid)
+    )
+    if (!stillSaved) {
+        deleteLikedCache(sampleUuid).catch(() => {})
+    }
 }
 
 /**

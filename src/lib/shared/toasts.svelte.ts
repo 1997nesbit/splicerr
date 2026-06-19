@@ -33,6 +33,7 @@ export function toast(
         variant?: ToastVariant
         duration?: number
         onClick?: () => void
+        progress?: ToastProgress | null
     }
 ): string {
     const id = crypto.randomUUID()
@@ -42,6 +43,7 @@ export function toast(
         description: opts.description,
         variant: opts.variant ?? "default",
         onClick: opts.onClick,
+        progress: opts.progress,
     })
     const duration = opts.duration ?? 6000
     if (duration > 0) {

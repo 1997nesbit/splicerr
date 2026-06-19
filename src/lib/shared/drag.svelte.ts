@@ -1,10 +1,29 @@
 import { startDrag } from "@crabnebula/tauri-plugin-drag"
 import { join, appCacheDir } from "@tauri-apps/api/path"
 import { exists, create, mkdir, readFile } from "@tauri-apps/plugin-fs"
-import { saveSample, savePackImage } from "./files.svelte"
+import { saveSample, savePackImage, encodeSampleWav } from "./files.svelte"
 import { semitonesFor } from "./transpose.svelte"
 import { loading } from "./loading.svelte"
+import { toast, dismissToast } from "./toasts.svelte"
 import type { SampleAsset, PackAsset } from "$lib/splice/types"
+
+// Fallback WAV save used when no samples_dir is configured. Writes to the app
+// cache dir so collection samples can still be dragged to the DAW.
+async function saveSampleToAppCache(
+    sampleAsset: SampleAsset,
+    semitones: number
+): Promise<string> {
+    const cacheDir = await appCacheDir()
+    if (!(await exists(cacheDir))) await mkdir(cacheDir)
+    const wavPath = await join(cacheDir, `drag_${sampleAsset.uuid}.wav`)
+    if (!(await exists(wavPath))) {
+        const wavData = await encodeSampleWav(sampleAsset, semitones)
+        const file = await create(wavPath)
+        await file.write(wavData)
+        await file.close()
+    }
+    return wavPath
+}
 
 async function createDragIcon(
     packImagePath: string,
@@ -121,14 +140,24 @@ export function prefetchSampleDrag(sampleAsset: SampleAsset): Promise<DragData |
         loading.samples.add(sampleAsset.uuid)
         loading.samplesCount++
         try {
-            const path = await saveSample(sampleAsset)
+            // Try saving to the configured samples_dir; fall back to app cache
+            // for collection samples when no samples_dir is set.
+            let path: string
+            try {
+                path = await saveSample(sampleAsset)
+            } catch {
+                path = await saveSampleToAppCache(sampleAsset, semitonesFor(sampleAsset))
+            }
 
             const pack = sampleAsset.parents.items[0] as PackAsset
             let iconPath: string
-            const packImagePath = await savePackImage(sampleAsset)
-            if (packImagePath && (await exists(packImagePath))) {
-                iconPath = await createDragIcon(packImagePath, pack.uuid)
-            } else {
+            try {
+                const packImagePath = await savePackImage(sampleAsset)
+                iconPath =
+                    packImagePath && (await exists(packImagePath))
+                        ? await createDragIcon(packImagePath, pack.uuid)
+                        : await createInvisibleIcon()
+            } catch {
                 iconPath = await createInvisibleIcon()
             }
 
@@ -155,13 +184,54 @@ export function prefetchSampleDrag(sampleAsset: SampleAsset): Promise<DragData |
  * only start the drag when the files are already prepared; otherwise we kick off
  * the prefetch so the next gesture works.
  */
+// Single-slot drag toast state: only one "preparing" notice is ever shown.
+// Switching to a different sample replaces the existing toast instead of stacking.
+let activeDragToastId: string | null = null
+let activeDragUuid: string | null = null
+
 export function handleSampleDrag(event: DragEvent, sampleAsset: SampleAsset) {
     event.preventDefault()
     const data = dragCache.get(cacheKey(sampleAsset))
     if (data) {
+        // Ready immediately — clear any leftover preparing toast and start the drag.
+        if (activeDragToastId) { dismissToast(activeDragToastId); activeDragToastId = null }
+        activeDragUuid = null
         startDrag({ item: [data.path], icon: data.iconPath })
-    } else {
-        console.log("🫳 Preparing", sampleAsset.name, "— drag again once ready")
-        prefetchSampleDrag(sampleAsset)
+        return
     }
+
+    const filename = sampleAsset.name.split("/").pop() ?? sampleAsset.name
+
+    // Same sample already being prepared — don't create a duplicate toast.
+    if (activeDragUuid === sampleAsset.uuid) return
+
+    // Replace the previous preparing toast instead of stacking a new one.
+    if (activeDragToastId) dismissToast(activeDragToastId)
+
+    activeDragUuid = sampleAsset.uuid
+    activeDragToastId = toast({
+        title: `Preparing "${filename}"`,
+        // progress with total=0 triggers the spinner + indeterminate bar in the toaster
+        progress: { received: 0, total: 0, unit: "bytes" },
+        duration: 0,
+    })
+
+    const capturedToastId = activeDragToastId
+    const capturedUuid = sampleAsset.uuid
+
+    prefetchSampleDrag(sampleAsset).then((result) => {
+        dismissToast(capturedToastId)
+        if (activeDragToastId === capturedToastId) activeDragToastId = null
+
+        // Only notify if the user hasn't moved on to preparing a different sample.
+        if (result && activeDragUuid === capturedUuid) {
+            activeDragUuid = null
+            toast({
+                title: `"${filename}" is ready`,
+                description: "Drag it to your DAW now.",
+                variant: "success",
+                duration: 8000,
+            })
+        }
+    })
 }

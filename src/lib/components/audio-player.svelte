@@ -19,6 +19,8 @@
     import Volume1 from "lucide-svelte/icons/volume-1"
     import Volume2 from "lucide-svelte/icons/volume-2"
     import TransposeDialog from "$lib/components/transpose-dialog.svelte"
+    import { network } from "$lib/shared/network.svelte"
+    import WifiOff from "lucide-svelte/icons/wifi-off"
 
     let {
         class: className,
@@ -162,6 +164,16 @@
             </div>
         {/if}
         <div class="flex items-center gap-2">
+            {#if !network.online}
+                <Tooltip.Provider>
+                    <Tooltip.Root>
+                        <Tooltip.Trigger class="text-amber-500 flex items-center cursor-default">
+                            <WifiOff size="16" />
+                        </Tooltip.Trigger>
+                        <Tooltip.Content>Offline — liked samples still play from local cache</Tooltip.Content>
+                    </Tooltip.Root>
+                </Tooltip.Provider>
+            {/if}
             <TransposeDialog />
             <Button
                 variant="ghost"

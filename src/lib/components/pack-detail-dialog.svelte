@@ -4,22 +4,32 @@
     import Separator from "$lib/components/ui/separator/separator.svelte"
     import ProgressLoading from "$lib/components/progress-loading.svelte"
     import SampleListEntry from "../../routes/sample-list-entry.svelte"
+    import SearchInput from "$lib/components/search-input.svelte"
+    import KeySelect from "$lib/components/key-select.svelte"
+    import BpmSelect from "$lib/components/bpm-select.svelte"
+    import AssetCategorySelect from "$lib/components/asset-category-select.svelte"
+    import SortHeader from "$lib/components/sort-header.svelte"
     import Button from "$lib/components/ui/button/button.svelte"
     import { globalAudio } from "$lib/shared/audio.svelte"
     import {
         packDetailStore,
         fetchPackSamples,
+        refreshPackSamples,
         downloadAllPackSamples,
     } from "$lib/shared/store.svelte"
     import { isPreviewed } from "$lib/shared/previewed.svelte"
+    import type { AssetSortType } from "$lib/splice/types"
     import FolderDown from "lucide-svelte/icons/folder-down"
     import Headphones from "lucide-svelte/icons/headphones"
     import ArrowDownUp from "lucide-svelte/icons/arrow-down-up"
+    import FilterX from "lucide-svelte/icons/filter-x"
     import { cn } from "$lib/utils"
 
     let viewportRef = $state<HTMLElement>(null!)
     let listenedOnly = $state(false)
     let listenedFirst = $state(false)
+    // BpmSelect needs a bindable bpm string; pack detail only uses min/max range.
+    let packBpm = $state<string | null>(null)
 
     const selectedIndex = $derived(
         packDetailStore.samples.findIndex(
@@ -29,7 +39,6 @@
 
     const packName = $derived(packDetailStore.pack?.name.split("/").slice(-1)[0] ?? "")
     const packImg = $derived(packDetailStore.pack?.files[0]?.url)
-    const provider = $derived(packDetailStore.pack?.provider?.name ?? "")
 
     const displayedSamples = $derived.by(() => {
         let list = packDetailStore.samples
@@ -42,41 +51,88 @@
         return list
     })
 
-    function onscroll() {
-        if (!viewportRef) return
-        if (packDetailStore.downloading) return
-        const dist = viewportRef.scrollHeight - viewportRef.scrollTop - viewportRef.clientHeight
-        if (dist >= 300) return
-        if (packDetailStore.loading) return
-        if (packDetailStore.samples.length >= packDetailStore.total_records) return
-        packDetailStore.page += 1
-        fetchPackSamples()
+    const hasActiveFilters = $derived(
+        !!packDetailStore.query ||
+        !!packDetailStore.key ||
+        packDetailStore.min_bpm != null ||
+        packDetailStore.max_bpm != null ||
+        !!packDetailStore.asset_category_slug
+    )
+
+    function onFilterChange() {
+        refreshPackSamples()
     }
+
+    function updatePackSort(newSort: AssetSortType) {
+        if (packDetailStore.sort === newSort) {
+            if (packDetailStore.order === "DESC") {
+                packDetailStore.order = "ASC"
+            } else {
+                packDetailStore.sort = "popularity"
+                packDetailStore.order = "DESC"
+            }
+        } else {
+            packDetailStore.sort = newSort
+            packDetailStore.order = "DESC"
+        }
+        refreshPackSamples()
+    }
+
+    function clearFilters() {
+        packDetailStore.query = ""
+        packDetailStore.key = null
+        packDetailStore.chord_type = null
+        packDetailStore.min_bpm = null
+        packDetailStore.max_bpm = null
+        packDetailStore.asset_category_slug = null
+        refreshPackSamples()
+    }
+
+    $effect(() => {
+        const el = viewportRef
+        if (!el) return
+        function onscroll() {
+            if (packDetailStore.downloading) return
+            if (packDetailStore.loading) return
+            if (packDetailStore.samples.length >= packDetailStore.total_records) return
+            const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+            if (dist >= 300) return
+            packDetailStore.page += 1
+            fetchPackSamples()
+        }
+        el.addEventListener("scroll", onscroll)
+        return () => el.removeEventListener("scroll", onscroll)
+    })
 </script>
 
 <Dialog.Root bind:open={packDetailStore.open}>
     <Dialog.Portal>
         <Dialog.Overlay />
         <Dialog.Content
-            class="max-w-4xl w-full h-[80vh] flex flex-col gap-0 p-0 overflow-hidden"
+            class="max-w-4xl w-full h-[85vh] flex flex-col gap-0 p-0 overflow-hidden"
         >
             <!-- Header -->
-            <div class="flex items-center gap-4 p-4 border-b flex-shrink-0">
+            <div class="flex items-center gap-4 p-4 pb-3 border-b flex-shrink-0">
                 {#if packImg}
-                    <img src={packImg} alt={packName} class="size-16 rounded flex-shrink-0" draggable="false" />
+                    <img
+                        src={packImg}
+                        alt={packName}
+                        class="size-14 rounded-lg object-cover flex-shrink-0 shadow-sm"
+                        draggable="false"
+                    />
                 {/if}
                 <div class="min-w-0 flex-grow">
-                    <h2 class="text-lg font-bold truncate">{packName}</h2>
-                    {#if provider}
-                        <p class="text-sm text-muted-foreground">{provider}</p>
-                    {/if}
+                    <h2 class="text-base font-bold truncate leading-tight">{packName}</h2>
                     {#if packDetailStore.total_records > 0}
-                        <p class="text-xs text-muted-foreground">
-                            {packDetailStore.total_records.toLocaleString()} samples
+                        <p class="text-xs text-muted-foreground mt-0.5">
+                            {#if hasActiveFilters}
+                                {packDetailStore.total_records.toLocaleString()} matching · {packDetailStore.samples.length.toLocaleString()} loaded
+                            {:else}
+                                {packDetailStore.total_records.toLocaleString()} samples
+                            {/if}
                         </p>
                     {/if}
                 </div>
-                <!-- Download all pack button -->
                 <Button
                     variant="outline"
                     size="sm"
@@ -93,8 +149,43 @@
                 </Button>
             </div>
 
-            <!-- Filter / sort toolbar -->
+            <!-- Search + filter bar -->
             <div class="flex items-center gap-2 px-4 py-2 border-b flex-shrink-0">
+                <SearchInput
+                    bind:value={packDetailStore.query}
+                    onsubmit={onFilterChange}
+                    class="flex-grow"
+                />
+                <KeySelect
+                    bind:key={packDetailStore.key}
+                    bind:chord_type={packDetailStore.chord_type}
+                    onselect={onFilterChange}
+                />
+                <BpmSelect
+                    bind:bpm={packBpm}
+                    bind:min_bpm={packDetailStore.min_bpm}
+                    bind:max_bpm={packDetailStore.max_bpm}
+                    onsubmit={onFilterChange}
+                />
+                <AssetCategorySelect
+                    bind:asset_category_slug={packDetailStore.asset_category_slug}
+                    onselect={onFilterChange}
+                />
+                {#if hasActiveFilters}
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        title="Clear all filters"
+                        onclick={clearFilters}
+                        class="flex-shrink-0 text-muted-foreground hover:text-foreground"
+                    >
+                        <FilterX size="16" />
+                    </Button>
+                {/if}
+            </div>
+
+            <!-- Secondary toolbar -->
+            <div class="flex items-center gap-2 px-4 py-1.5 border-b flex-shrink-0">
                 <Button
                     variant={listenedOnly ? "secondary" : "ghost"}
                     size="sm"
@@ -113,7 +204,7 @@
                     <ArrowDownUp size="13" />
                     Listened first
                 </Button>
-                {#if listenedOnly || listenedFirst}
+                {#if listenedOnly}
                     <span class="text-xs text-muted-foreground ml-auto">
                         {displayedSamples.length} shown
                     </span>
@@ -121,25 +212,49 @@
             </div>
 
             <!-- Column headers -->
-            <div class="flex gap-4 items-center px-5 py-1.5 flex-shrink-0">
+            <div class="flex gap-4 items-center px-5 py-1 flex-shrink-0 text-xs text-muted-foreground">
+                <div class="w-12 flex-shrink-0">Pack</div>
                 <div class="w-12 flex-shrink-0"></div>
-                <div class="w-12 flex-shrink-0"></div>
-                <div class="min-w-32 w-96 flex-[3_1_auto] text-xs text-muted-foreground">Filename</div>
+                <SortHeader
+                    value="name"
+                    label="Filename"
+                    sort={packDetailStore.sort}
+                    order={packDetailStore.order}
+                    onsort={updatePackSort}
+                    class="min-w-32 w-96 flex-[3_1_auto]"
+                />
                 <div class="min-w-32 w-[150px] flex-grow hidden md:block"></div>
-                <div class="flex-shrink-0 w-14 text-xs text-muted-foreground">Time</div>
-                <div class="flex-shrink-0 w-14 text-xs text-muted-foreground">Key</div>
-                <div class="flex-shrink-0 w-14 text-xs text-muted-foreground">BPM</div>
+                <SortHeader
+                    value="duration"
+                    label="Time"
+                    sort={packDetailStore.sort}
+                    order={packDetailStore.order}
+                    onsort={updatePackSort}
+                    class="flex-shrink-0 w-14 flex-grow"
+                />
+                <SortHeader
+                    value="key"
+                    label="Key"
+                    sort={packDetailStore.sort}
+                    order={packDetailStore.order}
+                    onsort={updatePackSort}
+                    class="flex-shrink-0 w-14 flex-grow"
+                />
+                <SortHeader
+                    value="bpm"
+                    label="BPM"
+                    sort={packDetailStore.sort}
+                    order={packDetailStore.order}
+                    onsort={updatePackSort}
+                    class="flex-shrink-0 w-14 flex-grow"
+                />
                 <div class="flex-shrink-0 w-8"></div>
             </div>
             <ProgressLoading loading={packDetailStore.loading || packDetailStore.downloading} />
             <Separator />
 
             <!-- Sample list -->
-            <ScrollArea
-                class="flex-grow px-4"
-                bind:viewportRef
-                onscroll={onscroll}
-            >
+            <ScrollArea class="flex-grow px-4" bind:viewportRef>
                 <div class="flex flex-col py-2">
                     {#each displayedSamples as sample, i (sample.uuid)}
                         {@const selected = globalAudio.currentAsset?.uuid === sample.uuid}
@@ -149,14 +264,23 @@
                             playing={selected && !globalAudio.paused}
                         />
                         {#if i < displayedSamples.length - 1}
-                            <div class={selected || i + 1 === selectedIndex ? "px-2" : ""}>
+                            <div class={cn(selected || i + 1 === selectedIndex ? "px-2" : "")}>
                                 <Separator />
                             </div>
                         {/if}
                     {:else}
                         {#if !packDetailStore.loading}
-                            <div class="flex justify-center items-center py-16 text-muted-foreground text-sm">
-                                {listenedOnly ? "No listened samples in this pack yet" : "No samples found"}
+                            <div class="flex flex-col gap-2 justify-center items-center py-16 text-muted-foreground">
+                                {#if listenedOnly}
+                                    <Headphones size="36" />
+                                    <p class="text-sm">No listened samples in this pack yet.</p>
+                                {:else if hasActiveFilters}
+                                    <FilterX size="36" />
+                                    <p class="text-sm">No samples match your filters.</p>
+                                    <Button variant="outline" size="sm" onclick={clearFilters}>Clear filters</Button>
+                                {:else}
+                                    <p class="text-sm">No samples found.</p>
+                                {/if}
                             </div>
                         {/if}
                     {/each}
