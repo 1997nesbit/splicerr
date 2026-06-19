@@ -8,6 +8,9 @@
     import Smile from "lucide-svelte/icons/smile"
     import Ghost from "lucide-svelte/icons/ghost"
     import Shuffle from "lucide-svelte/icons/shuffle"
+    import Headphones from "lucide-svelte/icons/headphones"
+    import Heart from "lucide-svelte/icons/heart"
+    import WifiOff from "lucide-svelte/icons/wifi-off"
     import Button from "$lib/components/ui/button/button.svelte"
     import ProgressLoading from "$lib/components/progress-loading.svelte"
     import Separator from "$lib/components/ui/separator/separator.svelte"
@@ -19,7 +22,7 @@
     import AudioPlayer from "$lib/components/audio-player.svelte"
     import TagBadge from "$lib/components/tag-badge.svelte"
     import { globalAudio } from "$lib/shared/audio.svelte"
-    import type { AssetSortType } from "$lib/splice/types"
+    import type { AssetSortType, SampleAsset } from "$lib/splice/types"
     import { loading } from "$lib/shared/loading.svelte"
     import {
         dataStore,
@@ -31,6 +34,18 @@
     } from "$lib/shared/store.svelte"
     import SettingsDialog from "$lib/components/settings-dialog.svelte"
     import KeySelect from "$lib/components/key-select.svelte"
+    import CollectionsSidebar from "$lib/components/collections-sidebar.svelte"
+    import { viewStore, toggleCollectionTag } from "$lib/shared/view.svelte"
+    import {
+        collectionSamples,
+        collectionsStore,
+        findCollection,
+        removeSample,
+        isLiked,
+        LIKES_UUID,
+    } from "$lib/shared/collections.svelte"
+    import { isPreviewed } from "$lib/shared/previewed.svelte"
+    import { network } from "$lib/shared/network.svelte"
 
     // TODO: Taxonomy comboboxes (maybe just pass all tags to each)
     // const instrumentTags = $derived(() =>
@@ -39,11 +54,160 @@
     //     )
     // )
 
-    // const genreTags = $derived(() =>
-    //     dataStore.tag_summary.filter(
-    //         (entry) => entry.tag.taxonomy.name == "Genre"
-    //     )
-    // )
+    const activeCollection = $derived(
+        view.kind === "collection" ? view.collection : null
+    )
+
+    // Client-side filter applied to collection and offline browse samples.
+    function applyClientFilters(samples: SampleAsset[]): SampleAsset[] {
+        let out = samples
+        const q = queryStore.query.trim().toLowerCase()
+        if (q) {
+            out = out.filter(
+                (s) =>
+                    s.name.toLowerCase().includes(q) ||
+                    (s.parents?.items[0]?.name?.toLowerCase() ?? "").includes(q) ||
+                    s.tags?.some((t) => t.label.toLowerCase().includes(q))
+            )
+        }
+        if (queryStore.asset_category_slug)
+            out = out.filter((s) => s.asset_category_slug === queryStore.asset_category_slug)
+        if (queryStore.key) {
+            out = out.filter((s) => s.key === queryStore.key)
+            if (queryStore.chord_type)
+                out = out.filter((s) => s.chord_type === queryStore.chord_type)
+        }
+        if (queryStore.min_bpm != null)
+            out = out.filter((s) => s.bpm != null && s.bpm >= queryStore.min_bpm!)
+        if (queryStore.max_bpm != null)
+            out = out.filter((s) => s.bpm != null && s.bpm <= queryStore.max_bpm!)
+        return out
+    }
+
+    function applyClientSort(samples: SampleAsset[]): SampleAsset[] {
+        const asc = queryStore.order === "ASC"
+        switch (queryStore.sort) {
+            case "name":
+                return [...samples].sort((a, b) => {
+                    const n = (a.name.split("/").pop() ?? "").localeCompare(
+                        b.name.split("/").pop() ?? ""
+                    )
+                    return asc ? n : -n
+                })
+            case "duration":
+                return [...samples].sort((a, b) =>
+                    asc ? a.duration - b.duration : b.duration - a.duration
+                )
+            case "key":
+                return [...samples].sort((a, b) => {
+                    const n = (a.key ?? "").localeCompare(b.key ?? "")
+                    return asc ? n : -n
+                })
+            case "bpm":
+                return [...samples].sort((a, b) =>
+                    asc ? (a.bpm ?? 0) - (b.bpm ?? 0) : (b.bpm ?? 0) - (a.bpm ?? 0)
+                )
+            case "listened":
+                return [...samples].sort(
+                    (a, b) => (isPreviewed(b.uuid) ? 1 : 0) - (isPreviewed(a.uuid) ? 1 : 0)
+                )
+            default:
+                return samples
+        }
+    }
+
+    // Triggers an API fetch only when online and in browse mode; in collection mode
+    // and offline, shownSamples re-derives reactively from the updated queryStore.
+    const onFilterChange = () => {
+        if (view.kind === "browse" && network.online) fetchAssets()
+    }
+
+    // The samples shown in the main list: search results in browse mode,
+    // the collection's stored samples (filtered + sorted) in collection mode.
+    const shownSamples = $derived.by(() => {
+        if (view.kind !== "collection") {
+            // Offline: aggregate all collection samples, deduplicated, with client-side filters
+            if (!network.online) {
+                const seen = new Set<string>()
+                const all: SampleAsset[] = []
+                for (const col of collectionsStore.collections) {
+                    for (const s of collectionSamples(col.uuid)) {
+                        if (!seen.has(s.uuid)) {
+                            seen.add(s.uuid)
+                            all.push(s)
+                        }
+                    }
+                }
+                let samples = applyClientFilters(all)
+                samples = applyClientSort(samples)
+                if (hideListened) samples = samples.filter((s) => !isPreviewed(s.uuid))
+                if (hideLiked) samples = samples.filter((s) => !isLiked(s.uuid))
+                return samples
+            }
+            // Online: normal API-backed browse
+            let samples = dataStore.sampleAssets
+            if (queryStore.sort === "listened") {
+                samples = [...samples].sort(
+                    (a, b) => (isPreviewed(b.uuid) ? 1 : 0) - (isPreviewed(a.uuid) ? 1 : 0)
+                )
+            }
+            if (hideListened) samples = samples.filter((s) => !isPreviewed(s.uuid))
+            if (hideLiked) samples = samples.filter((s) => !isLiked(s.uuid))
+            return samples
+        }
+        // Collection mode: full client-side filtering + tag filter + sorting
+        let samples = collectionSamples(view.collection.uuid)
+        samples = applyClientFilters(samples)
+        if (viewStore.tagFilter.length > 0) {
+            samples = samples.filter((sample) =>
+                viewStore.tagFilter.every((tagUuid) =>
+                    sample.tags.some((tag) => tag.uuid == tagUuid)
+                )
+            )
+        }
+        return applyClientSort(samples)
+    })
+
+    // Aggregated tag counts across the open collection's samples, most common first.
+    const collectionTagSummary = $derived.by(() => {
+        if (view.kind !== "collection") return []
+        const counts = new Map<
+            string,
+            { uuid: string; label: string; count: number }
+        >()
+        for (const sample of collectionSamples(view.collection.uuid)) {
+            for (const tag of sample.tags) {
+                const entry = counts.get(tag.uuid) ?? {
+                    uuid: tag.uuid,
+                    label: tag.label,
+                    count: 0,
+                }
+                entry.count++
+                counts.set(tag.uuid, entry)
+            }
+        }
+        return [...counts.values()].sort((a, b) => b.count - a.count)
+    })
+
+    // Which empty-state to show, derived from the same source as the list so the
+    // message can never disagree with what's actually rendered.
+    const emptyStateKind = $derived.by(() => {
+        if (shownSamples.length > 0) return null
+        if (view.kind === "collection") {
+            const anyFilter =
+                viewStore.tagFilter.length > 0 ||
+                !!queryStore.query.trim() ||
+                !!queryStore.key ||
+                !!queryStore.asset_category_slug ||
+                queryStore.min_bpm != null ||
+                queryStore.max_bpm != null
+            return anyFilter ? "no-tag-match" : "empty-collection"
+        }
+        if (!network.online) return "offline-empty"
+        if (loading.fetchError) return "error"
+        if (loading.beforeFirstLoad) return "welcome"
+        return "no-results"
+    })
 
     $effect(() => {
         if (
@@ -62,6 +226,8 @@
     }
 
     let expandTags = $state(false)
+    let hideListened = $state(false)
+    let hideLiked = $state(false)
 
     let viewportRef = $state<HTMLElement>(null!)
     let tagsContainerRef = $state<HTMLElement>(null!)
@@ -85,7 +251,8 @@
             queryStore.sort = newSort
             queryStore.order = "DESC"
         }
-        fetchAssets()
+        // Only hit the API in online browse; collection mode re-derives via applyClientSort.
+        if (view.kind === "browse" && network.online) fetchAssets()
     }
 
     const gotoPrev = () => {
@@ -150,27 +317,37 @@
 <main class="flex flex-col size-full">
     <div class="flex flex-col p-4 gap-4">
         <div class="flex gap-4 justify-between items-center">
-            <SettingsDialog />
-            <SearchInput
-                bind:value={queryStore.query}
-                onsubmit={fetchAssets}
-                class="flex-grow"
-                bind:inputRef={searchInputRef}
-            />
+            {#if view.kind === "browse"}
+                <SearchInput
+                    bind:value={queryStore.query}
+                    onsubmit={onFilterChange}
+                    class="flex-grow"
+                    bind:inputRef={searchInputRef}
+                />
+            {:else}
+                <h2 class="flex-shrink-0 text-xl font-bold truncate max-w-[12rem]">
+                    {activeCollection?.name ?? "Collection"}
+                </h2>
+                <SearchInput
+                    bind:value={queryStore.query}
+                    onsubmit={() => {}}
+                    class="flex-grow"
+                />
+            {/if}
             <KeySelect
                 bind:key={queryStore.key}
                 bind:chord_type={queryStore.chord_type}
-                onselect={fetchAssets}
+                onselect={onFilterChange}
             />
             <BpmSelect
                 bind:bpm={queryStore.bpm}
                 bind:min_bpm={queryStore.min_bpm}
                 bind:max_bpm={queryStore.max_bpm}
-                onsubmit={fetchAssets}
+                onsubmit={onFilterChange}
             />
             <AssetCategorySelect
                 bind:asset_category_slug={queryStore.asset_category_slug}
-                onselect={fetchAssets}
+                onselect={onFilterChange}
             />
         </div>
 
@@ -246,8 +423,30 @@
 
         <div class="flex justify-between items-end gap-2">
             <div class="text-muted-foreground text-xs flex-grow">
-                {dataStore.total_records.toLocaleString()} results
+                {#if !network.online}
+                    {shownSamples.length} offline sample{shownSamples.length === 1 ? "" : "s"}
+                {:else if hideListened || hideLiked}
+                    {shownSamples.length.toLocaleString()} of {dataStore.total_records.toLocaleString()} results
+                {:else}
+                    {dataStore.total_records.toLocaleString()} results
+                {/if}
             </div>
+            <Button
+                variant={hideListened ? "secondary" : "outline"}
+                size="icon"
+                title={hideListened ? "Showing unheard only (click to show all)" : "Hide listened samples"}
+                onclick={() => hideListened = !hideListened}
+            >
+                <Headphones size="16" />
+            </Button>
+            <Button
+                variant={hideLiked ? "secondary" : "outline"}
+                size="icon"
+                title={hideLiked ? "Showing uncollected only (click to show all)" : "Hide saved samples"}
+                onclick={() => hideLiked = !hideLiked}
+            >
+                <Heart size="16" />
+            </Button>
             <Button
                 variant="outline"
                 size="icon"
@@ -265,6 +464,49 @@
                 order={queryStore.order}
             />
         </div>
+        {:else}
+        <div class="flex flex-col gap-2">
+            {#if collectionTagSummary.length > 0}
+                <div class="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
+                    {#each collectionTagSummary as tag (tag.uuid)}
+                        {@const active = viewStore.tagFilter.includes(tag.uuid)}
+                        <TagBadge
+                            label={tag.label}
+                            count={tag.count}
+                            {active}
+                            onclick={() => toggleCollectionTag(tag.uuid)}
+                        />
+                    {/each}
+                </div>
+            {/if}
+            <div class="flex items-center gap-2">
+                <div class="text-muted-foreground text-xs flex-grow">
+                    {shownSamples.length.toLocaleString()} sounds
+                </div>
+                <Button
+                    variant={hideListened ? "secondary" : "outline"}
+                    size="icon"
+                    title={hideListened ? "Showing unheard only (click to show all)" : "Hide listened samples"}
+                    onclick={() => hideListened = !hideListened}
+                >
+                    <Headphones size="16" />
+                </Button>
+                <Button
+                    variant={hideLiked ? "secondary" : "outline"}
+                    size="icon"
+                    title={hideLiked ? "Showing uncollected only (click to show all)" : "Hide saved samples"}
+                    onclick={() => hideLiked = !hideLiked}
+                >
+                    <Heart size="16" />
+                </Button>
+                <SortSelect
+                    bind:sort={queryStore.sort}
+                    onselect={() => {}}
+                    order={queryStore.order}
+                />
+            </div>
+        </div>
+        {/if}
 
         <div class="flex flex-col gap-2">
             <Separator />
@@ -359,7 +601,48 @@
                             ? "px-2"
                             : ""}
                     >
-                        <Separator />
+                        {#if emptyStateKind === "no-tag-match"}
+                            <Search size="48" />
+                            <p class="font-bold text-xl">No matches</p>
+                            <p class="text-sm">No sounds match the selected tags.</p>
+                        {:else if emptyStateKind === "empty-collection"}
+                            <Library size="48" />
+                            <p class="font-bold text-xl">Empty collection</p>
+                            <p class="text-sm">
+                                Add sounds from Browse using the menu on each row.
+                            </p>
+                        {:else if emptyStateKind === "offline-empty"}
+                            <WifiOff size="48" class="text-amber-500" />
+                            <p class="font-bold text-xl">You're offline</p>
+                            <p class="text-sm">
+                                {queryStore.query.trim()
+                                    ? "No saved samples match your search."
+                                    : "Save samples while online to play them here."}
+                            </p>
+                        {:else if emptyStateKind === "error"}
+                            <Ghost size="48" />
+                            <p class="font-bold text-xl">Something went wrong :/</p>
+                            <p class="text-sm">Couldn't load any samples</p>
+                            <Button onclick={fetchAssets}>Retry</Button>
+                        {:else if emptyStateKind === "welcome"}
+                            <Smile size="48" />
+                            <p class="font-bold text-xl">Hey there!</p>
+                            <p class="text-sm">Make some cool music, will ya?</p>
+                        {:else}
+                            <Search size="48" />
+                            <p class="font-bold text-xl">No results</p>
+                            <p class="text-sm">Try different keywords</p>
+                        {/if}
+                    </div>
+                {/each}
+                {#if view.kind === "browse" && loading.fetchError && dataStore.sampleAssets.length > 0}
+                    <div
+                        class="flex flex-col py-8 gap-2 justify-center items-center text-muted-foreground"
+                    >
+                        <Ghost size="48" />
+                        <p class="font-bold text-xl">Something went wrong :/</p>
+                        <p class="text-sm">Couldn't load any more samples</p>
+                        <Button onclick={fetchAssets}>Retry</Button>
                     </div>
                 {/if}
             {:else}
