@@ -35,6 +35,7 @@
 
     const currentPack = $derived(globalAudio.currentAsset?.parents?.items[0])
     const currentName = $derived(globalAudio.currentAsset?.name.split("/").slice(-1)[0])
+    const isLoading = $derived(globalAudio.loading || !!loading.samplesCount)
 </script>
 
 <div class={cn("flex flex-col w-full", className)} {...restProps}>
@@ -46,9 +47,12 @@
         bind:volume={globalAudio.volume}
         onloadstart={() => {
             globalAudio.loading = true
-            // TODO: Move into list component
         }}
         oncanplaythrough={() => {
+            globalAudio.loading = false
+        }}
+        onended={() => {
+            globalAudio.paused = true
             globalAudio.loading = false
         }}
     ></audio>
@@ -73,16 +77,22 @@
             <Button
                 variant="ghost"
                 size="icon-lg"
+                class="relative"
                 onclick={() => globalAudio.togglePlay()}
                 disabled={!globalAudio.currentAsset}
             >
-                {#if globalAudio.loading || loading.samplesCount}
-                    <LoaderCircle class="animate-spin" />
-                {:else if globalAudio.paused}
-                    <Play />
-                {:else}
-                    <Pause />
-                {/if}
+                <span class={cn(
+                    "absolute inset-0 flex items-center justify-center transition-all duration-200 ease-out",
+                    !isLoading && globalAudio.paused ? "opacity-100 scale-100" : "opacity-0 scale-75"
+                )}><Play size="20" /></span>
+                <span class={cn(
+                    "absolute inset-0 flex items-center justify-center transition-all duration-200 ease-out",
+                    !isLoading && !globalAudio.paused ? "opacity-100 scale-100" : "opacity-0 scale-75"
+                )}><Pause size="20" /></span>
+                <span class={cn(
+                    "absolute inset-0 flex items-center justify-center transition-all duration-200 ease-out",
+                    isLoading ? "opacity-100 scale-100" : "opacity-0 scale-50"
+                )}><LoaderCircle size="20" class="animate-spin" /></span>
             </Button>
             <Button
                 variant="ghost"
@@ -156,16 +166,21 @@
             <Button
                 variant="ghost"
                 size="icon-lg"
-                class="shrink-0"
+                class="relative shrink-0"
                 onclick={() => globalAudio.toggleMute()}
             >
-                {#if globalAudio.volume == 0}
-                    <VolumeX />
-                {:else if globalAudio.volume < 0.5}
-                    <Volume1 />
-                {:else}
-                    <Volume2 />
-                {/if}
+                <span class={cn(
+                    "absolute inset-0 flex items-center justify-center transition-all duration-200 ease-out",
+                    globalAudio.volume === 0 ? "opacity-100 scale-100" : "opacity-0 scale-75"
+                )}><VolumeX size="20" /></span>
+                <span class={cn(
+                    "absolute inset-0 flex items-center justify-center transition-all duration-200 ease-out",
+                    globalAudio.volume > 0 && globalAudio.volume < 0.5 ? "opacity-100 scale-100" : "opacity-0 scale-75"
+                )}><Volume1 size="20" /></span>
+                <span class={cn(
+                    "absolute inset-0 flex items-center justify-center transition-all duration-200 ease-out",
+                    globalAudio.volume >= 0.5 ? "opacity-100 scale-100" : "opacity-0 scale-75"
+                )}><Volume2 size="20" /></span>
             </Button>
             <input
                 style="--progress: {globalAudio.volume * 100}%"

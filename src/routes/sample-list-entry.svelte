@@ -23,6 +23,7 @@
     import Plus from "lucide-svelte/icons/plus"
     import Check from "lucide-svelte/icons/check"
     import Heart from "lucide-svelte/icons/heart"
+    import Headphones from "lucide-svelte/icons/headphones"
     import Ellipsis from "lucide-svelte/icons/ellipsis"
     import ChevronLeft from "lucide-svelte/icons/chevron-left"
     import ListPlus from "lucide-svelte/icons/list-plus"
@@ -57,6 +58,9 @@
 
     let menuOpen = $state(false)
     const liked = $derived(isLiked(sampleAsset.uuid))
+    const isLoading = $derived(
+        (selected && globalAudio.loading) || !!(loading.samplesCount && loading.samples.has(sampleAsset.uuid))
+    )
     // Which view the three-dots popover shows: the root menu or the picker.
     let menuView = $state<"root" | "collections">("root")
 
@@ -90,7 +94,7 @@
 <button
     class={cn(
         "flex gap-4 items-center justify-between p-1 rounded-lg focus:outline-none cursor-grab",
-        selected && "bg-muted",
+        selected ? "bg-muted" : isPreviewed(sampleAsset.uuid) && "bg-amber-500/10",
         className
     )}
     id={`sample-list-entry-${sampleAsset.uuid}`}
@@ -104,7 +108,9 @@
     <div class="relative flex-shrink-0">
         <PackPreview {pack} />
         {#if isPreviewed(sampleAsset.uuid)}
-            <span class="absolute bottom-0 right-0 size-2 rounded-full bg-primary border border-background"></span>
+            <span class="absolute -bottom-1 -right-1 size-4 rounded-full bg-amber-500 text-white flex items-center justify-center">
+                <Headphones size="9" />
+            </span>
         {/if}
     </div>
     <Button
@@ -119,26 +125,50 @@
     <Button
         variant="ghost"
         bind:ref={playButtonRef}
-        class="group flex-shrink-0 focus:outline-none"
+        class="relative group flex-shrink-0 focus:outline-none"
         size="icon-lg"
-        onclick={() =>
-            playing
-                ? globalAudio.ref.pause()
-                : globalAudio.playSampleAsset(sampleAsset)}
+        onclick={() => playing ? globalAudio.ref.pause() : globalAudio.playSampleAsset(sampleAsset)}
     >
-        {#if (selected && globalAudio.loading) || (loading.samplesCount && loading.samples.has(sampleAsset.uuid))}
-            <LoaderCircle class="animate-spin" />
-        {:else if playing}
-            <Pause />
-        {:else}
-            <Play class="group-hover:block hidden" />
+        <!-- Category icon: visible at rest, scales out on hover / load / play -->
+        <span class={cn(
+            "absolute inset-0 flex items-center justify-center transition-all duration-200 ease-out",
+            isLoading || playing
+                ? "opacity-0 scale-50"
+                : "opacity-100 scale-100 group-hover:opacity-0 group-hover:scale-75"
+        )}>
             {#if sampleAsset.asset_category_slug in assetIcons}
                 {@const Icon = assetIcons[sampleAsset.asset_category_slug]}
-                <Icon class="group-hover:hidden" />
+                <Icon size="20" />
             {:else}
-                <CircleX class="group-hover:hidden" />
+                <CircleX size="20" />
             {/if}
-        {/if}
+        </span>
+
+        <!-- Play icon: scales in on hover when idle -->
+        <span class={cn(
+            "absolute inset-0 flex items-center justify-center transition-all duration-200 ease-out",
+            isLoading || playing
+                ? "opacity-0 scale-75"
+                : "opacity-0 scale-75 group-hover:opacity-100 group-hover:scale-100"
+        )}>
+            <Play size="20" />
+        </span>
+
+        <!-- Pause icon: visible while playing -->
+        <span class={cn(
+            "absolute inset-0 flex items-center justify-center transition-all duration-200 ease-out",
+            playing && !isLoading ? "opacity-100 scale-100" : "opacity-0 scale-75"
+        )}>
+            <Pause size="20" />
+        </span>
+
+        <!-- Spinner: visible while loading -->
+        <span class={cn(
+            "absolute inset-0 flex items-center justify-center transition-all duration-200 ease-out",
+            isLoading ? "opacity-100 scale-100" : "opacity-0 scale-50"
+        )}>
+            <LoaderCircle size="20" class="animate-spin" />
+        </span>
     </Button>
     <div class="min-w-32 w-96 flex-[3_1_auto] overflow-clip">
         <div
