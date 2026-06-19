@@ -60,6 +60,16 @@ export const globalAudio = $state({
             console.info("🐢 Already loading sample")
             return
         }
+
+        // Already loaded — skip the src-clear/reload cycle and just seek + play.
+        // Avoids the AbortError that WebView2 throws when play() races a new src load.
+        if (this.currentAsset?.uuid === sampleAsset.uuid && this.ref.src) {
+            this.ref.loop = sampleAsset.asset_category_slug === "loop" && config.repeat_audio
+            this.ref.currentTime = from
+            this.ref.play().catch(() => {})
+            return
+        }
+
         this.ref.src = ""
         this.currentTime = 0
 
@@ -97,16 +107,5 @@ export const globalAudio = $state({
         this.ref.loop =
             asset.asset_category_slug == "loop" && config.repeat_audio
         if (!wasPaused) this.ref.play()
-    },
-    // Play a preset preview from a pre-resolved blob URL.
-    // The caller resolves the URL (via getPresetPreviewURL) to avoid a
-    // circular import between audio.svelte.ts and store.svelte.ts.
-    playPresetFromUrl(uuid: string, name: string, url: string) {
-        this.ref.src = ""
-        this.currentTime = 0
-        this.currentAsset = { uuid, name } as unknown as SampleAsset
-        this.ref.src = url
-        this.ref.loop = false
-        this.ref.play()
     },
 })

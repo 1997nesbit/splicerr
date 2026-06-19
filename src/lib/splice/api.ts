@@ -77,25 +77,6 @@ export const SoundsSearchAutocomplete = {
     query: 'query SoundsSearchAutocomplete($term: String!) {\n  soundsSearchSuggestions(searchTerm: $term, limit: 7, context: "marketplace") {\n    autocompleteUuid\n    results {\n      autocompleteTerm\n      termType\n      length\n      offset\n      __typename\n    }\n    __typename\n  }\n}',
 }
 
-const SHARED_FRAGMENTS = SamplesSearch.query.slice(SamplesSearch.query.indexOf("\n\nfragment"))
-
-export const PresetsSearch = {
-    operationName: "PresetsSearch",
-    variables: {
-        order: "DESC",
-        sort: "random",
-        limit: 50,
-        page: 1,
-        tags: [] as string[],
-        random_seed: null as string | null,
-        query: null as string | null,
-        ac_uuid: null as string | null,
-    },
-    query:
-        "query PresetsSearch($query: String, $order: SortOrder = DESC, $sort: AssetSortType = popularity, $random_seed: String, $tags: [ID], $limit: Int = 50, $page: Int = 1, $ac_uuid: String) {\n  assetsSearch(\n    filter: {legacy: true, published: true, asset_type_slug: preset, query: $query, tag_ids: $tags, ac_uuid: $ac_uuid}\n    pagination: {page: $page, limit: $limit}\n    sort: {sort: $sort, order: $order, random_seed: $random_seed}\n  ) {\n    ...assetDetails\n    __typename\n  }\n}" +
-        SHARED_FRAGMENTS,
-}
-
 // ---------------------------------------------------------------
 
 import { invoke } from "@tauri-apps/api/core"
@@ -104,8 +85,7 @@ export async function querySplice(
     template: QueryTemplate,
     variables: typeof template.variables = {}
 ) {
-    const body = { ...template }
-    Object.assign(body.variables, variables)
+    const body = { ...template, variables: { ...template.variables, ...variables } }
     const startTime = Date.now()
     console.log("💌 Requesting", body)
     try {
