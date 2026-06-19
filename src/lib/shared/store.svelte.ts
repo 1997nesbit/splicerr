@@ -1,4 +1,4 @@
-import { querySplice, SamplesSearch, PresetsSearch, AssetFilesByUuids } from "$lib/splice/api"
+import { querySplice, SamplesSearch } from "$lib/splice/api"
 import { descrambleSample } from "$lib/splice/descrambler"
 import type {
     AssetCategorySlug,
@@ -6,8 +6,6 @@ import type {
     ChordType,
     Key,
     PackAsset,
-    PresetAsset,
-    PresetsSearchResponse,
     SampleAsset,
     SamplesSearchResponse,
     SortOrder,
@@ -17,10 +15,15 @@ import { globalAudio } from "./audio.svelte"
 import { loading } from "./loading.svelte"
 import { config } from "./config.svelte"
 import { fetch } from "@tauri-apps/plugin-http"
-import { save } from "@tauri-apps/plugin-dialog"
 import { writeFile } from "@tauri-apps/plugin-fs"
 import { pitchShiftAudioBuffer, semitonesFor } from "./transpose.svelte"
 import { audioBufferToWav, decodeAudioFromURL } from "./wav"
+import {
+    toast,
+    downloadToast,
+    updateToastProgress,
+    completeToast,
+} from "./toasts.svelte"
 
 export const DEFAULT_SORT = "relevance"
 export const PER_PAGE = 50
@@ -99,6 +102,8 @@ export const fetchAssets = () => {
     loading.assets = true
     querySplice(SamplesSearch, {
         ...queryIdentity,
+        // "listened" is a client-side sort — send the default to the API
+        sort: queryStore.sort === "listened" ? DEFAULT_SORT : queryStore.sort,
         page: queryStore.page,
         limit: PER_PAGE,
     })
@@ -166,26 +171,19 @@ export async function getDescrambledSampleURL(sampleAsset: SampleAsset) {
     loading.samples.add(sampleAsset.uuid)
     loading.samplesCount++
 
-    const response = await fetch(sampleAsset.files[0].url)
-
-    const data = new Uint8Array(await response.arrayBuffer())
-
-    const descrambledData = descrambleSample(data)
-
-    const blob = new Blob([descrambledData], {
-        type: "audio/mp3",
-    })
-
-    const blobURL = window.URL.createObjectURL(blob)
-
-    dataStore.descrambledSamples.set(sampleAsset.uuid, blobURL)
-
-    loading.samples.delete(sampleAsset.uuid)
-    loading.samplesCount--
-
-    console.info("🔗 Created descrambled sample blob")
-
-    return blobURL
+    try {
+        const response = await fetch(sampleAsset.files[0].url)
+        const data = new Uint8Array(await response.arrayBuffer())
+        const descrambledData = descrambleSample(data)
+        const blob = new Blob([descrambledData], { type: "audio/mp3" })
+        const blobURL = window.URL.createObjectURL(blob)
+        dataStore.descrambledSamples.set(sampleAsset.uuid, blobURL)
+        console.info("🔗 Created descrambled sample blob")
+        return blobURL
+    } finally {
+        loading.samples.delete(sampleAsset.uuid)
+        loading.samplesCount--
+    }
 }
 
 export function freeDescrambledSample(uuid: string) {
@@ -258,203 +256,17 @@ export function clearTransposedCache() {
     console.info("🧹 Cleared transposed sample cache")
 }
 
-// ─── Preset store ────────────────────────────────────────────────────────────
-
-export const presetStore = $state({
-    presetAssets: [] as PresetAsset[],
-    previewUrls: new Map<string, string>(),
-    fxpUrls: new Map<string, string>(),
-    total_records: 0,
-    tag_summary: [] as TagSummaryEntry[],
-})
-
-export const presetQueryStore = $state({
-    query: "",
-    sort: "random" as AssetSortType,
-    random_seed: randomSeed(),
-    order: "DESC" as SortOrder,
-    page: 1,
-})
-
-let currentPresetQueryIdentity = ""
-
-export const fetchPresets = () => {
-    const identity = JSON.stringify({
-        query: presetQueryStore.query,
-        sort: presetQueryStore.sort,
-        order: presetQueryStore.order,
-        random_seed: presetQueryStore.random_seed,
-    })
-
-    if (identity !== currentPresetQueryIdentity) {
-        presetStore.presetAssets = []
-        presetStore.total_records = 0
-        presetQueryStore.page = 1
-    }
-
-    loading.assets = true
-
-    querySplice(PresetsSearch, {
-        query: presetQueryStore.query || null,
-        sort: presetQueryStore.sort,
-        order: presetQueryStore.order,
-        random_seed: presetQueryStore.random_seed,
-        page: presetQueryStore.page,
-        limit: PER_PAGE,
-    })
-        .then((response) => {
-            const result = (response as PresetsSearchResponse).data.assetsSearch
-            if (identity === currentPresetQueryIdentity) {
-                presetStore.presetAssets.push(...result.items)
-            } else {
-                presetStore.presetAssets = result.items
-                currentPresetQueryIdentity = identity
-            }
-            presetStore.total_records = result.response_metadata.records
-            presetStore.tag_summary = result.tag_summary
-            loading.assets = false
-            loading.fetchError = null
-        })
-        .catch((error: Error) => {
-            loading.fetchError = error
-            loading.assets = false
-        })
-}
-
-export async function getPresetPreviewURL(preset: PresetAsset): Promise<string | null> {
-    const existing = presetStore.previewUrls.get(preset.uuid)
-    if (existing) return existing
-
-    const previewFile = preset.files.find(
-        (f) =>
-            f.asset_file_type_slug === "preview_mp3" ||
-            f.asset_file_type_slug === "preview" ||
-            f.asset_file_type_slug === "mp3" ||
-            f.asset_file_type_slug === "audio-preview"
-    )
-    if (!previewFile) {
-        console.warn("⚠️ No preview file found for preset", preset.name, "— slugs:", preset.files.map((f) => f.asset_file_type_slug))
-        return null
-    }
-
-    console.info("🎛️ Fetching preset preview", preset.name, previewFile.url)
-
-    loading.samples.add(preset.uuid)
-    loading.samplesCount++
-
-    try {
-        const response = await fetch(previewFile.url)
-        if (!response.ok) {
-            console.error("⚠️ Preset preview fetch failed", response.status, previewFile.url)
-            return null
-        }
-        // Preset previews are plain MP3s — no descrambling needed
-        const data = new Uint8Array(await response.arrayBuffer())
-        const blob = new Blob([data], { type: "audio/mp3" })
-        const url = window.URL.createObjectURL(blob)
-        presetStore.previewUrls.set(preset.uuid, url)
-        console.info("🔗 Preset preview ready", preset.name)
-        return url
-    } catch (e) {
-        console.error("⚠️ Preset preview error", e)
-        return null
-    } finally {
-        loading.samples.delete(preset.uuid)
-        loading.samplesCount--
-    }
-}
-
-export async function getPresetFxpURL(preset: PresetAsset): Promise<string | null> {
-    const existing = presetStore.fxpUrls.get(preset.uuid)
-    if (existing) return existing
-
-    const fxpFile = preset.files.find(
-        (f) => f.asset_file_type_slug === "fxp" || f.path?.endsWith(".fxp")
-    )
-    if (!fxpFile) {
-        console.warn("⚠️ No FXP file found for preset", preset.name, "— available slugs:", preset.files.map((f) => f.asset_file_type_slug))
-        return null
-    }
-
-    loading.samples.add(preset.uuid)
-    loading.samplesCount++
-
-    try {
-        const response = await fetch(fxpFile.url)
-        const data = new Uint8Array(await response.arrayBuffer())
-        const descrambled = descrambleSample(data)
-        const blob = new Blob([descrambled], { type: "application/octet-stream" })
-        const url = window.URL.createObjectURL(blob)
-        presetStore.fxpUrls.set(preset.uuid, url)
-        return url
-    } finally {
-        loading.samples.delete(preset.uuid)
-        loading.samplesCount--
-    }
-}
-
-export async function downloadPresetFxp(preset: PresetAsset): Promise<void> {
-    loading.samples.add(preset.uuid)
-    loading.samplesCount++
-
-    try {
-        // The search API only returns preview_mp3; fetch all files via AssetFilesByUuids
-        let fxpUrl: string | null = null
-
-        const inSearch = preset.files.find(
-            (f) => f.asset_file_type_slug === "fxp" || f.path?.endsWith(".fxp")
-        )
-        if (inSearch) {
-            fxpUrl = inSearch.url
-        } else {
-            console.info("🔍 FXP not in search results, fetching via AssetFilesByUuids...")
-            const result = await querySplice(AssetFilesByUuids, { assetUuids: [preset.uuid] }) as any
-            const entry = result?.data?.assetFiles?.[0]
-            if (entry) {
-                console.info("📦 AssetFilesByUuids returned", entry.files.map((f: any) => f.asset_file_type_slug + ": " + f.path))
-                const fxpFile = entry.files.find(
-                    (f: any) => f.asset_file_type_slug === "fxp" || f.path?.endsWith(".fxp")
-                )
-                if (fxpFile) fxpUrl = fxpFile.url
-            }
-        }
-
-        if (!fxpUrl) {
-            console.warn("⚠️ No FXP file found for", preset.name)
-            return
-        }
-
-        const response = await fetch(fxpUrl)
-        if (!response.ok) {
-            console.error("⚠️ FXP fetch failed", response.status, fxpUrl)
-            return
-        }
-        const data = new Uint8Array(await response.arrayBuffer())
-        const descrambled = descrambleSample(data)
-
-        const safeName = preset.name.replace(/[<>:"/\\|?*]/g, "_")
-        const savePath = await save({
-            defaultPath: safeName + ".fxp",
-            filters: [{ name: "Serum Preset", extensions: ["fxp"] }],
-        })
-
-        if (savePath) {
-            await writeFile(savePath, descrambled)
-            console.info("💾 Saved", preset.name, "to", savePath)
-        }
-    } finally {
-        loading.samples.delete(preset.uuid)
-        loading.samplesCount--
-    }
-}
-
-export async function saveSampleToDisk(sampleAsset: SampleAsset): Promise<void> {
+export async function saveSampleToDisk(
+    sampleAsset: SampleAsset,
+    options?: { silent?: boolean }
+): Promise<void> {
     if (!config.samples_dir) {
         console.warn("⚠️ No samples directory configured — set it in Settings")
         return
     }
 
     const filename = sampleAsset.name.split("/").at(-1) ?? sampleAsset.name
+    const fullPath = `${config.samples_dir}/${filename}`
 
     loading.samples.add(sampleAsset.uuid)
     loading.samplesCount++
@@ -462,20 +274,56 @@ export async function saveSampleToDisk(sampleAsset: SampleAsset): Promise<void> 
     try {
         let data: Uint8Array
         const cachedUrl = dataStore.descrambledSamples.get(sampleAsset.uuid)
+
         if (cachedUrl) {
-            // Already played — reuse in-memory blob, no re-download needed
+            // Already played — reuse in-memory blob, no re-download
             const res = await window.fetch(cachedUrl)
             data = new Uint8Array(await res.arrayBuffer())
+            await writeFile(fullPath, data)
+            if (!options?.silent) {
+                toast({ title: filename, description: `Saved to ${fullPath}`, variant: "success" })
+            }
         } else {
-            // Not yet played — download, descramble, and cache so play is instant too
+            // Network download — stream with byte-level progress
             const res = await fetch(sampleAsset.files[0].url)
-            const raw = new Uint8Array(await res.arrayBuffer())
-            data = descrambleSample(raw)
+            const contentLength = Number(res.headers.get("content-length") ?? 0)
+            const toastId = options?.silent ? null : downloadToast({ title: filename, total: contentLength })
+
+            let rawData: Uint8Array
+            if (res.body) {
+                const reader = res.body.getReader()
+                const chunks: Uint8Array[] = []
+                let received = 0
+                while (true) {
+                    const { done, value } = await reader.read()
+                    if (done) break
+                    chunks.push(value)
+                    received += value.length
+                    if (toastId) updateToastProgress(toastId, received, contentLength || received)
+                }
+                rawData = new Uint8Array(received)
+                let offset = 0
+                for (const chunk of chunks) { rawData.set(chunk, offset); offset += chunk.length }
+            } else {
+                rawData = new Uint8Array(await res.arrayBuffer())
+                if (toastId) updateToastProgress(toastId, rawData.length, rawData.length)
+            }
+
+            data = descrambleSample(rawData)
             const blob = new Blob([data.buffer as ArrayBuffer], { type: "audio/mp3" })
             dataStore.descrambledSamples.set(sampleAsset.uuid, window.URL.createObjectURL(blob))
+
+            await writeFile(fullPath, data)
+
+            if (toastId) {
+                completeToast(toastId, {
+                    title: filename,
+                    description: `Saved to ${fullPath}`,
+                    variant: "success",
+                })
+            }
         }
 
-        await writeFile(`${config.samples_dir}/${filename}`, data)
         console.info("💾 Saved", filename, "to", config.samples_dir)
     } finally {
         loading.samples.delete(sampleAsset.uuid)
@@ -492,6 +340,8 @@ export const packDetailStore = $state({
     total_records: 0,
     page: 1,
     loading: false,
+    downloading: false,
+    downloadProgress: null as { done: number; total: number } | null,
 })
 
 export function openPackDetail(pack: PackAsset) {
@@ -535,4 +385,78 @@ export function fetchPackSamples() {
         .catch(() => {
             packDetailStore.loading = false
         })
+}
+
+export async function downloadAllPackSamples() {
+    if (!packDetailStore.pack || !config.samples_dir) return
+    packDetailStore.downloading = true
+
+    try {
+        // Wait for any in-flight initial fetch to land
+        let waited = 0
+        while (packDetailStore.loading && waited < 6000) {
+            await new Promise<void>((res) => setTimeout(res, 150))
+            waited += 150
+        }
+        if (packDetailStore.total_records === 0) return
+
+        // Fetch all pages not yet loaded
+        while (packDetailStore.samples.length < packDetailStore.total_records) {
+            if (packDetailStore.loading) {
+                await new Promise<void>((res) => setTimeout(res, 150))
+                continue
+            }
+            const nextPage = Math.floor(packDetailStore.samples.length / PER_PAGE) + 1
+            packDetailStore.loading = true
+            try {
+                const response = await querySplice(SamplesSearch, {
+                    parent_asset_uuid: packDetailStore.pack.uuid,
+                    page: nextPage,
+                    limit: PER_PAGE,
+                    sort: "popularity",
+                    order: "DESC",
+                    random_seed: null,
+                    query: null,
+                    tags: [],
+                    key: null,
+                    chord_type: null,
+                    bpm: null,
+                    min_bpm: null,
+                    max_bpm: null,
+                    asset_category_slug: null,
+                    ac_uuid: null,
+                })
+                const result = (response as SamplesSearchResponse).data.assetsSearch
+                const newItems = result.items.filter(
+                    (item) => !packDetailStore.samples.some((s) => s.uuid === item.uuid)
+                )
+                packDetailStore.samples.push(...newItems)
+                packDetailStore.total_records = result.response_metadata.records
+            } finally {
+                packDetailStore.loading = false
+            }
+        }
+
+        // Download each sample sequentially under a single pack-level progress toast
+        const all = [...packDetailStore.samples]
+        packDetailStore.downloadProgress = { done: 0, total: all.length }
+        const packName = packDetailStore.pack?.name.split("/").at(-1) ?? "Pack"
+        const toastId = downloadToast({ title: packName, total: all.length, unit: "files" })
+
+        for (let i = 0; i < all.length; i++) {
+            await saveSampleToDisk(all[i], { silent: true })
+            packDetailStore.downloadProgress.done = i + 1
+            updateToastProgress(toastId, i + 1, all.length)
+        }
+
+        completeToast(toastId, {
+            title: packName,
+            description: `${all.length} samples saved to ${config.samples_dir}`,
+            variant: "success",
+            duration: 10000,
+        })
+    } finally {
+        packDetailStore.downloading = false
+        packDetailStore.downloadProgress = null
+    }
 }

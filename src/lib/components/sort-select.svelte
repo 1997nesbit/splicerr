@@ -31,6 +31,10 @@
             value: "recency",
             label: "Most recent",
         },
+        {
+            value: "listened",
+            label: "Listened first",
+        },
     ]
 
     const ordered = [
