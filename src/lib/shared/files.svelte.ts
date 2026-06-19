@@ -13,7 +13,7 @@ import { Buffer } from "buffer"
 
 globalThis.Buffer = Buffer // node-wav needs Buffer which is not defined when using Vite
 
-const sanitizePath = (path: string) => path.replace(/[^a-zA-Z0-9#_\-\.\/]/g, "_")
+export const sanitizePath = (path: string) => path.replace(/[^a-zA-Z0-9#_\-\.\/]/g, "_")
 
 // Insert a suffix (e.g. transpose tag) right before the file extension.
 const withSuffix = (name: string, suffix: string) => {

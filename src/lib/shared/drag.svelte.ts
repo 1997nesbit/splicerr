@@ -1,21 +1,50 @@
 import { startDrag } from "@crabnebula/tauri-plugin-drag"
 import { join, appCacheDir } from "@tauri-apps/api/path"
-import { exists, create, mkdir, readFile } from "@tauri-apps/plugin-fs"
-import { saveSample, savePackImage, encodeSampleWav } from "./files.svelte"
+import { exists, create, mkdir, readFile, readDir, stat, remove } from "@tauri-apps/plugin-fs"
+import { encodeSampleWav } from "./files.svelte"
 import { semitonesFor } from "./transpose.svelte"
 import { loading } from "./loading.svelte"
 import { toast, dismissToast } from "./toasts.svelte"
 import type { SampleAsset, PackAsset } from "$lib/splice/types"
 
-// Fallback WAV save used when no samples_dir is configured. Writes to the app
-// cache dir so collection samples can still be dragged to the DAW.
+async function dragWavDir(): Promise<string> {
+    const dir = await join(await appCacheDir(), "drag-wavs")
+    if (!(await exists(dir))) await mkdir(dir)
+    return dir
+}
+
+async function dragIconDir(): Promise<string> {
+    const dir = await join(await appCacheDir(), "drag-icons")
+    if (!(await exists(dir))) await mkdir(dir)
+    return dir
+}
+
+// Downloads the pack cover art into AppCache/drag-icons/ so the drag icon can
+// be built without writing anything to the user's samples_dir.
+async function fetchPackCoverToCache(pack: PackAsset): Promise<string | null> {
+    try {
+        const dir = await dragIconDir()
+        const coverPath = await join(dir, `${pack.uuid}_cover.jpg`)
+        if (await exists(coverPath)) return coverPath
+        const response = await fetch(pack.files[0].url)
+        if (!response.ok) return null
+        const file = await create(coverPath)
+        await file.write(new Uint8Array(await response.arrayBuffer()))
+        await file.close()
+        return coverPath
+    } catch {
+        return null
+    }
+}
+
+// All drag WAVs go to AppCache/drag-wavs/ — drag is always ephemeral, never
+// written to the user's samples_dir. Only the Download button writes there.
 async function saveSampleToAppCache(
     sampleAsset: SampleAsset,
     semitones: number
 ): Promise<string> {
-    const cacheDir = await appCacheDir()
-    if (!(await exists(cacheDir))) await mkdir(cacheDir)
-    const wavPath = await join(cacheDir, `drag_${sampleAsset.uuid}.wav`)
+    const dir = await dragWavDir()
+    const wavPath = await join(dir, `${sampleAsset.uuid}.wav`)
     if (!(await exists(wavPath))) {
         const wavData = await encodeSampleWav(sampleAsset, semitones)
         const file = await create(wavPath)
@@ -29,16 +58,10 @@ async function createDragIcon(
     packImagePath: string,
     packId: string
 ): Promise<string> {
-    const cacheDir = await appCacheDir()
-    const iconPath = await join(cacheDir, `${packId}.png`)
+    const dir = await dragIconDir()
+    const iconPath = await join(dir, `${packId}.png`)
 
     if (!(await exists(iconPath))) {
-        // Ensure cache directory exists
-        if (!(await exists(cacheDir))) {
-            await mkdir(cacheDir)
-        }
-
-        // Read the saved pack image file
         const imageData = await readFile(packImagePath)
         const buffer = new ArrayBuffer(imageData.byteLength)
         const view = new Uint8Array(buffer)
@@ -53,14 +76,10 @@ async function createDragIcon(
 }
 
 async function createInvisibleIcon(): Promise<string> {
-    const cacheDir = await appCacheDir()
-    const iconPath = await join(cacheDir, "invisible-drag-icon.png")
+    const dir = await dragIconDir()
+    const iconPath = await join(dir, "invisible.png")
 
     if (!(await exists(iconPath))) {
-        if (!(await exists(cacheDir))) {
-            await mkdir(cacheDir)
-        }
-
         const transparentPng = new Uint8Array([
             0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
             0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
@@ -140,26 +159,15 @@ export function prefetchSampleDrag(sampleAsset: SampleAsset): Promise<DragData |
         loading.samples.add(sampleAsset.uuid)
         loading.samplesCount++
         try {
-            // Try saving to the configured samples_dir; fall back to app cache
-            // for collection samples when no samples_dir is set.
-            let path: string
-            try {
-                path = await saveSample(sampleAsset)
-            } catch {
-                path = await saveSampleToAppCache(sampleAsset, semitonesFor(sampleAsset))
-            }
+            // Drag WAVs always go to AppCache/drag-wavs/ — never the user's samples_dir.
+            // The Download button is the intentional "save permanently" action.
+            const path = await saveSampleToAppCache(sampleAsset, semitonesFor(sampleAsset))
 
             const pack = sampleAsset.parents.items[0] as PackAsset
-            let iconPath: string
-            try {
-                const packImagePath = await savePackImage(sampleAsset)
-                iconPath =
-                    packImagePath && (await exists(packImagePath))
-                        ? await createDragIcon(packImagePath, pack.uuid)
-                        : await createInvisibleIcon()
-            } catch {
-                iconPath = await createInvisibleIcon()
-            }
+            const coverPath = await fetchPackCoverToCache(pack)
+            const iconPath = coverPath
+                ? await createDragIcon(coverPath, pack.uuid)
+                : await createInvisibleIcon()
 
             const data = { path, iconPath }
             dragCache.set(key, data)
@@ -188,6 +196,38 @@ export function prefetchSampleDrag(sampleAsset: SampleAsset): Promise<DragData |
 // Switching to a different sample replaces the existing toast instead of stacking.
 let activeDragToastId: string | null = null
 let activeDragUuid: string | null = null
+
+/**
+ * Cleans up stale drag cache files on startup. WAVs older than 7 days and
+ * icons older than 30 days are deleted; recently used entries stay warm across
+ * sessions so the next drag is instant.
+ */
+export async function cleanupDragCache(): Promise<void> {
+    const now = Date.now()
+    const sevenDays = 7 * 24 * 60 * 60 * 1000
+    const thirtyDays = 30 * 24 * 60 * 60 * 1000
+
+    async function pruneDir(dir: string, maxAge: number) {
+        if (!(await exists(dir))) return
+        for (const entry of await readDir(dir)) {
+            try {
+                const filePath = await join(dir, entry.name)
+                const info = await stat(filePath)
+                if (info.mtime && now - info.mtime.getTime() > maxAge) {
+                    await remove(filePath)
+                }
+            } catch {}
+        }
+    }
+
+    try {
+        const cacheDir = await appCacheDir()
+        await pruneDir(await join(cacheDir, "drag-wavs"), sevenDays)
+        await pruneDir(await join(cacheDir, "drag-icons"), thirtyDays)
+    } catch (e) {
+        console.warn("⚠️ Drag cache cleanup failed", e)
+    }
+}
 
 export function handleSampleDrag(event: DragEvent, sampleAsset: SampleAsset) {
     event.preventDefault()

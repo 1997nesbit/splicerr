@@ -15,7 +15,9 @@ import { loading } from "./loading.svelte"
 import { fetch } from "@tauri-apps/plugin-http"
 import { getBlobFromLikedCache } from "./liked-cache"
 import { network } from "./network.svelte"
-import { writeFile } from "@tauri-apps/plugin-fs"
+import { exists, mkdir, writeFile } from "@tauri-apps/plugin-fs"
+
+const sanitizeName = (s: string) => s.replace(/[^a-zA-Z0-9#_\-\.\/]/g, "_")
 import { pitchShiftAudioBuffer, semitonesFor } from "./transpose.svelte"
 import { audioBufferToWav, decodeAudioFromURL } from "./wav"
 
@@ -264,13 +266,17 @@ export async function saveSampleToDisk(
         return
     }
 
+    const packName = sanitizeName(sampleAsset.parents?.items[0]?.name ?? "Unknown Pack")
     const filename = sampleAsset.name.split("/").at(-1) ?? sampleAsset.name
-    const fullPath = `${config.samples_dir}/${filename}`
+    const packDir = `${config.samples_dir}/${packName}`
+    const fullPath = `${packDir}/${filename}`
 
     loading.samples.add(sampleAsset.uuid)
     loading.samplesCount++
 
     try {
+        if (!(await exists(packDir))) await mkdir(packDir)
+
         let data: Uint8Array
         const cachedUrl = dataStore.descrambledSamples.get(sampleAsset.uuid)
 

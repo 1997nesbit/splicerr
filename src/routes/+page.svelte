@@ -46,6 +46,7 @@
     } from "$lib/shared/collections.svelte"
     import { isPreviewed } from "$lib/shared/previewed.svelte"
     import { network } from "$lib/shared/network.svelte"
+    import { cleanupDragCache } from "$lib/shared/drag.svelte"
 
     // TODO: Taxonomy comboboxes (maybe just pass all tags to each)
     // const instrumentTags = $derived(() =>
@@ -296,6 +297,8 @@
     //     )
 
     onMount(() => {
+        cleanupDragCache()
+
         viewportRef.addEventListener("scroll", () => {
             if (
                 !loading.assets &&
