@@ -1,6 +1,5 @@
 <script lang="ts">
     import SampleListEntry from "./sample-list-entry.svelte"
-    import PresetListEntry from "$lib/components/preset-list-entry.svelte"
     import PackDetailDialog from "$lib/components/pack-detail-dialog.svelte"
     import SearchInput from "$lib/components/search-input.svelte"
     import { ScrollArea } from "$lib/components/ui/scroll-area"
@@ -12,6 +11,7 @@
     import Library from "lucide-svelte/icons/library"
     import Shuffle from "lucide-svelte/icons/shuffle"
     import Button from "$lib/components/ui/button/button.svelte"
+    // Button still used for shuffle + error retry
     import ProgressLoading from "$lib/components/progress-loading.svelte"
     import Separator from "$lib/components/ui/separator/separator.svelte"
     import SortHeader from "$lib/components/sort-header.svelte"
@@ -31,9 +31,6 @@
         fetchAssets,
         DEFAULT_SORT,
         randomSeed,
-        presetStore,
-        presetQueryStore,
-        fetchPresets,
     } from "$lib/shared/store.svelte"
     import KeySelect from "$lib/components/key-select.svelte"
     import CollectionsSidebar from "$lib/components/collections-sidebar.svelte"
@@ -43,6 +40,7 @@
         findCollection,
         removeSample,
     } from "$lib/shared/collections.svelte"
+    import { isPreviewed } from "$lib/shared/previewed.svelte"
 
     // Single source of truth for the active view. The header, list, empty state
     // and row actions all key off this one derived, so they can never disagree
@@ -63,7 +61,14 @@
     // The samples shown in the main list: search results in browse mode,
     // the collection's stored samples (optionally tag-filtered) in collection mode.
     const shownSamples = $derived.by(() => {
-        if (view.kind !== "collection") return dataStore.sampleAssets
+        if (view.kind !== "collection") {
+            if (queryStore.sort === "listened") {
+                return [...dataStore.sampleAssets].sort(
+                    (a, b) => (isPreviewed(b.uuid) ? 1 : 0) - (isPreviewed(a.uuid) ? 1 : 0)
+                )
+            }
+            return dataStore.sampleAssets
+        }
         const samples = collectionSamples(view.collection.uuid)
         if (viewStore.tagFilter.length == 0) return samples
         return samples.filter((sample) =>
@@ -128,7 +133,6 @@
     }
 
     let expandTags = $state(false)
-    let browseModeTab = $state<"samples" | "presets">("samples")
 
     let viewportRef = $state<HTMLElement>(null!)
     let tagsContainerRef = $state<HTMLElement>(null!)
@@ -195,18 +199,10 @@
 
             if (distanceFromBottom >= 300) return
             if (loading.assets || viewStore.mode !== "browse") return
-
-            if (browseModeTab === "samples") {
-                if (dataStore.sampleAssets.length >= dataStore.total_records) return
-                queryStore.page += 1
-                console.log("📃 End of list reached, loading more assets")
-                fetchAssets()
-            } else {
-                if (presetStore.presetAssets.length >= presetStore.total_records) return
-                presetQueryStore.page += 1
-                console.log("📃 End of list reached, loading more presets")
-                fetchPresets()
-            }
+            if (dataStore.sampleAssets.length >= dataStore.total_records) return
+            queryStore.page += 1
+            console.log("📃 End of list reached, loading more assets")
+            fetchAssets()
         })
 
         searchInputRef.focus()
@@ -252,30 +248,6 @@
                 </h2>
             {/if}
         </div>
-
-        {#if view.kind === "browse"}
-        <div class="flex gap-1 border rounded-lg p-0.5 w-fit">
-            <Button
-                variant={browseModeTab === "samples" ? "secondary" : "ghost"}
-                size="sm"
-                class="h-7 px-3 text-sm"
-                onclick={() => {
-                    browseModeTab = "samples"
-                    fetchAssets()
-                }}
-            >Samples</Button>
-            <Button
-                variant={browseModeTab === "presets" ? "secondary" : "ghost"}
-                size="sm"
-                class="h-7 px-3 text-sm"
-                onclick={() => {
-                    browseModeTab = "presets"
-                    presetQueryStore.random_seed = randomSeed()
-                    fetchPresets()
-                }}
-            >Presets</Button>
-        </div>
-        {/if}
 
         {#if view.kind === "browse"}
         <div
@@ -349,34 +321,24 @@
 
         <div class="flex justify-between items-end gap-2">
             <div class="text-muted-foreground text-xs flex-grow">
-                {browseModeTab === "samples"
-                    ? dataStore.total_records.toLocaleString()
-                    : presetStore.total_records.toLocaleString()} results
+                {dataStore.total_records.toLocaleString()} results
             </div>
             <Button
                 variant="outline"
                 size="icon"
                 onclick={() => {
-                    if (browseModeTab === "samples") {
-                        queryStore.random_seed = randomSeed()
-                        queryStore.sort = "random"
-                        fetchAssets()
-                    } else {
-                        presetQueryStore.random_seed = randomSeed()
-                        presetQueryStore.sort = "random"
-                        fetchPresets()
-                    }
+                    queryStore.random_seed = randomSeed()
+                    queryStore.sort = "random"
+                    fetchAssets()
                 }}
             >
                 <Shuffle />
             </Button>
-            {#if browseModeTab === "samples"}
             <SortSelect
                 bind:sort={queryStore.sort}
                 onselect={fetchAssets}
                 order={queryStore.order}
             />
-            {/if}
         </div>
         {:else}
         <div class="flex flex-col gap-2">
@@ -410,7 +372,6 @@
                 <div
                     class="w-12 flex-shrink-0 text-xs text-muted-foreground"
                 ></div>
-                {#if browseModeTab === "samples" || view.kind === "collection"}
                 <SortHeader
                     value="name"
                     label="Filename"
@@ -444,11 +405,6 @@
                     onsort={updateSort}
                     class="flex-shrink-0 w-14 flex-grow"
                 />
-                {:else}
-                <div class="min-w-32 w-96 flex-[3_1_auto] text-xs text-muted-foreground">Name</div>
-                <div class="flex-shrink-0 w-24 text-xs text-muted-foreground">Min. version</div>
-                <div class="flex-shrink-0 w-8"></div>
-                {/if}
             </div>
             <ProgressLoading
                 loading={loading.assets || loading.waveformsCount > 0}
@@ -484,45 +440,7 @@
         }}
     >
         <div class="flex flex-col py-2 size-full">
-            {#if browseModeTab === "presets" && view.kind === "browse"}
-                {#each presetStore.presetAssets as preset (preset.uuid)}
-                    {@const selected = globalAudio.currentAsset?.uuid === preset.uuid}
-                    <PresetListEntry
-                        {preset}
-                        {selected}
-                        playing={selected && !globalAudio.paused}
-                    />
-                    {#if preset !== presetStore.presetAssets[presetStore.presetAssets.length - 1]}
-                        <Separator />
-                    {/if}
-                {:else}
-                    <div
-                        class="flex flex-col gap-2 justify-center items-center size-full text-muted-foreground"
-                    >
-                        {#if loading.fetchError}
-                            <Ghost size="48" />
-                            <p class="font-bold text-xl">Something went wrong :/</p>
-                            <p class="text-sm">Couldn't load any presets</p>
-                            <Button onclick={fetchPresets}>Retry</Button>
-                        {:else if !loading.assets}
-                            <Search size="48" />
-                            <p class="font-bold text-xl">No presets found</p>
-                            <p class="text-sm">Try different keywords</p>
-                        {/if}
-                    </div>
-                {/each}
-                {#if loading.fetchError && presetStore.presetAssets.length > 0}
-                    <div
-                        class="flex flex-col py-8 gap-2 justify-center items-center text-muted-foreground"
-                    >
-                        <Ghost size="48" />
-                        <p class="font-bold text-xl">Something went wrong :/</p>
-                        <p class="text-sm">Couldn't load any more presets</p>
-                        <Button onclick={fetchPresets}>Retry</Button>
-                    </div>
-                {/if}
-            {:else}
-                {#each shownSamples as sampleAsset, index (sampleAsset.uuid)}
+            {#each shownSamples as sampleAsset, index (sampleAsset.uuid)}
                     {@const selected =
                         globalAudio.currentAsset?.uuid == sampleAsset.uuid}
                     <SampleListEntry
@@ -589,7 +507,6 @@
                         <Button onclick={fetchAssets}>Retry</Button>
                     </div>
                 {/if}
-            {/if}
         </div>
     </ScrollArea>
         </main>

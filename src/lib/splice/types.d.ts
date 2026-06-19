@@ -121,6 +121,7 @@ export type AssetSortType =
     | "duration"
     | "key"
     | "name"
+    | "listened"
 
 export type AssetTypeSlug = "sample" | "preset" | "pack"
 
@@ -141,36 +142,3 @@ export type AssetDevice = {
     __typename: string
 }
 
-export type PresetAsset = {
-    asset_type_slug: "preset"
-    asset_prices: Array<AssetPrice>
-    uuid: string
-    name: string
-    tags: Array<AssetTag>
-    files: Array<AssetFile>
-    __typename: string
-    parents: {
-        items: Array<PackAsset>
-        __typename: string
-    }
-    asset_devices: Array<AssetDevice>
-}
-
-export type PresetsSearchResponse = {
-    data: {
-        assetsSearch: {
-            items: Array<PresetAsset>
-            __typename: string
-            tag_summary: Array<TagSummaryEntry>
-            pagination_metadata: {
-                currentPage: number
-                totalPages: number
-                __typename: string
-            }
-            response_metadata: {
-                records: number
-                __typename: string
-            }
-        }
-    }
-}
