@@ -37,14 +37,19 @@ async function fetchPackCoverToCache(pack: PackAsset): Promise<string | null> {
     }
 }
 
-// All drag WAVs go to AppCache/drag-wavs/ — drag is always ephemeral, never
-// written to the user's samples_dir. Only the Download button writes there.
+// All drag WAVs go to AppCache/drag-wavs/<uuid>/<name>.wav — drag is always
+// ephemeral, never written to the user's samples_dir. The UUID subfolder
+// prevents collisions between same-named samples from different packs while
+// letting the DAW see the human-readable filename.
 async function saveSampleToAppCache(
     sampleAsset: SampleAsset,
     semitones: number
 ): Promise<string> {
-    const dir = await dragWavDir()
-    const wavPath = await join(dir, `${sampleAsset.uuid}.wav`)
+    const displayName = sampleAsset.name.split("/").at(-1) ?? sampleAsset.name
+    const baseName = displayName.replace(/\.[^.]+$/, "")
+    const sampleDir = await join(await dragWavDir(), sampleAsset.uuid)
+    if (!(await exists(sampleDir))) await mkdir(sampleDir)
+    const wavPath = await join(sampleDir, `${baseName}.wav`)
     if (!(await exists(wavPath))) {
         const wavData = await encodeSampleWav(sampleAsset, semitones)
         const file = await create(wavPath)
@@ -214,7 +219,7 @@ export async function cleanupDragCache(): Promise<void> {
                 const filePath = await join(dir, entry.name)
                 const info = await stat(filePath)
                 if (info.mtime && now - info.mtime.getTime() > maxAge) {
-                    await remove(filePath)
+                    await remove(filePath, { recursive: true })
                 }
             } catch {}
         }
