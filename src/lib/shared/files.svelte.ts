@@ -54,6 +54,22 @@ export async function absoluteSamplePath(sampleAsset: SampleAsset, suffix = "") 
     return await join(config.samples_dir, sampleAssetPath(sampleAsset, suffix))
 }
 
+export async function encodeSampleWav(sampleAsset: SampleAsset, semitones: number): Promise<Uint8Array> {
+    const blobURL = await getDescrambledSampleURL(sampleAsset)
+    const response = await fetch(blobURL)
+    const buffer = await (await response.blob()).arrayBuffer()
+    const decoded = await new AudioContext().decodeAudioData(buffer)
+    const shifted = pitchShiftAudioBuffer(decoded, semitones)
+    const channels: Float32Array[] = []
+    for (let i = 0; i < shifted.numberOfChannels; i++) {
+        const channel = shifted.getChannelData(i)
+        const trimSamples = config.cut_mp3_delay ? Math.floor(shifted.sampleRate * 0.012) : 0
+        const end = (sampleAsset.duration / 1000) * shifted.sampleRate + trimSamples
+        channels.push(channel.subarray(trimSamples, Math.min(end, channel.length)))
+    }
+    return new Uint8Array(encode(channels as any, { bitDepth: 16, sampleRate: shifted.sampleRate }))
+}
+
 export async function saveSample(sampleAsset: SampleAsset) {
     const semitones = semitonesFor(sampleAsset)
     const absolutePath = await absoluteSamplePath(

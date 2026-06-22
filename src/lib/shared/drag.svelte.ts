@@ -37,19 +37,26 @@ async function fetchPackCoverToCache(pack: PackAsset): Promise<string | null> {
     }
 }
 
-// All drag WAVs go to AppCache/drag-wavs/<uuid>/<name>.wav — drag is always
-// ephemeral, never written to the user's samples_dir. The UUID subfolder
-// prevents collisions between same-named samples from different packs while
-// letting the DAW see the human-readable filename.
+// Strips characters that are illegal in Windows/macOS/Linux filenames.
+function sanitizeName(name: string): string {
+    return name.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").trim() || "unknown"
+}
+
+// All drag WAVs go to AppCache/drag-wavs/<pack-name>/<sample-name>.wav so the
+// DAW sees readable folder and file names. Semitones suffix is appended when
+// the sample is transposed so pitched variants don't collide with the original.
 async function saveSampleToAppCache(
     sampleAsset: SampleAsset,
     semitones: number
 ): Promise<string> {
+    const pack = sampleAsset.parents.items[0]
+    const packFolder = sanitizeName(pack?.name.split("/").at(-1) ?? "unknown")
     const displayName = sampleAsset.name.split("/").at(-1) ?? sampleAsset.name
-    const baseName = displayName.replace(/\.[^.]+$/, "")
-    const sampleDir = await join(await dragWavDir(), sampleAsset.uuid)
+    const baseName = sanitizeName(displayName.replace(/\.[^.]+$/, ""))
+    const suffix = semitones !== 0 ? ` (${semitones > 0 ? "+" : ""}${semitones}st)` : ""
+    const sampleDir = await join(await dragWavDir(), packFolder)
     if (!(await exists(sampleDir))) await mkdir(sampleDir)
-    const wavPath = await join(sampleDir, `${baseName}.wav`)
+    const wavPath = await join(sampleDir, `${baseName}${suffix}.wav`)
     if (!(await exists(wavPath))) {
         const wavData = await encodeSampleWav(sampleAsset, semitones)
         const file = await create(wavPath)
@@ -212,6 +219,37 @@ export async function cleanupDragCache(): Promise<void> {
     const sevenDays = 7 * 24 * 60 * 60 * 1000
     const thirtyDays = 30 * 24 * 60 * 60 * 1000
 
+    // Prune individual files older than maxAge, then remove empty parent dirs.
+    async function pruneFiles(dir: string, maxAge: number) {
+        if (!(await exists(dir))) return
+        for (const packEntry of await readDir(dir)) {
+            try {
+                const packPath = await join(dir, packEntry.name)
+                const packInfo = await stat(packPath)
+                if (!packInfo.isDirectory) {
+                    // flat file (old cache format) — prune by its own mtime
+                    if (packInfo.mtime && now - packInfo.mtime.getTime() > maxAge) {
+                        await remove(packPath)
+                    }
+                    continue
+                }
+                // pack subfolder — prune individual files inside it
+                for (const fileEntry of await readDir(packPath)) {
+                    try {
+                        const filePath = await join(packPath, fileEntry.name)
+                        const fileInfo = await stat(filePath)
+                        if (fileInfo.mtime && now - fileInfo.mtime.getTime() > maxAge) {
+                            await remove(filePath)
+                        }
+                    } catch {}
+                }
+                // remove the pack folder itself if it is now empty
+                const remaining = await readDir(packPath)
+                if (remaining.length === 0) await remove(packPath)
+            } catch {}
+        }
+    }
+
     async function pruneDir(dir: string, maxAge: number) {
         if (!(await exists(dir))) return
         for (const entry of await readDir(dir)) {
@@ -227,7 +265,7 @@ export async function cleanupDragCache(): Promise<void> {
 
     try {
         const cacheDir = await appCacheDir()
-        await pruneDir(await join(cacheDir, "drag-wavs"), sevenDays)
+        await pruneFiles(await join(cacheDir, "drag-wavs"), sevenDays)
         await pruneDir(await join(cacheDir, "drag-icons"), thirtyDays)
     } catch (e) {
         console.warn("⚠️ Drag cache cleanup failed", e)

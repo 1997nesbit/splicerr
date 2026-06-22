@@ -71,6 +71,12 @@ export const SoundsSearchAutocomplete = {
     query: 'query SoundsSearchAutocomplete($term: String!) {\n  soundsSearchSuggestions(searchTerm: $term, limit: 7, context: "marketplace") {\n    autocompleteUuid\n    results {\n      autocompleteTerm\n      termType\n      length\n      offset\n      __typename\n    }\n    __typename\n  }\n}',
 }
 
+export const AssetFilesByUuids = {
+    operationName: "AssetFilesByUuids",
+    variables: { assetUuids: [] as string[] },
+    query: "query AssetFilesByUuids($assetUuids: [ID!]!) {\n  assetFiles(uuids: $assetUuids) {\n    assetUuid\n    files {\n      uuid\n      url\n      __typename\n    }\n    __typename\n  }\n}",
+}
+
 // ---------------------------------------------------------------
 
 const GRAPHQL_URL = "https://surfaces-graphql.splice.com/graphql"

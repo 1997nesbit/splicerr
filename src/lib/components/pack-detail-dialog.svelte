@@ -262,6 +262,7 @@
                             sampleAsset={sample}
                             {selected}
                             playing={selected && !globalAudio.paused}
+                            hidePackButton={true}
                         />
                         {#if i < displayedSamples.length - 1}
                             <div class={cn(selected || i + 1 === selectedIndex ? "px-2" : "")}>

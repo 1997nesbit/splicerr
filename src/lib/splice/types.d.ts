@@ -79,6 +79,9 @@ export type PackAsset = {
     uuid: string
     name: string
     files: Array<AssetFile>
+    provider?: { name: string; permalink_slug: string; __typename: string }
+    provider_uuid?: string
+    main_genre?: string
     __typename: string
 }
 
@@ -111,6 +114,17 @@ export type AssetSortType =
     | "duration"
     | "key"
     | "name"
+    | "listened"
+
+export type AssetFilesByUuidsResponse = {
+    data: {
+        assetFiles: Array<{
+            assetUuid: string
+            files: Array<{ uuid: string; url: string; __typename: string }> | null
+            __typename: string
+        }>
+    }
+}
 
 export type AssetTypeSlug = "sample" | "preset" | "pack"
 

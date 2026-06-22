@@ -11,6 +11,7 @@
     import Headphones from "lucide-svelte/icons/headphones"
     import Heart from "lucide-svelte/icons/heart"
     import WifiOff from "lucide-svelte/icons/wifi-off"
+    import Library from "lucide-svelte/icons/library"
     import Button from "$lib/components/ui/button/button.svelte"
     import ProgressLoading from "$lib/components/progress-loading.svelte"
     import Separator from "$lib/components/ui/separator/separator.svelte"
@@ -34,8 +35,14 @@
     } from "$lib/shared/store.svelte"
     import SettingsDialog from "$lib/components/settings-dialog.svelte"
     import KeySelect from "$lib/components/key-select.svelte"
+    import { view, viewStore, toggleCollectionTag } from "$lib/shared/view.svelte"
+    import { packSearch, fetchPackResults, fetchPopularPacks, loadMorePacks, openPackDetail, filterByProvider, clearProviderFilter, downloadProviderPacks } from "$lib/shared/store.svelte"
     import CollectionsSidebar from "$lib/components/collections-sidebar.svelte"
-    import { viewStore, toggleCollectionTag } from "$lib/shared/view.svelte"
+    import PackDetailDialog from "$lib/components/pack-detail-dialog.svelte"
+    import Layers from "lucide-svelte/icons/layers"
+    import LoaderCircle from "lucide-svelte/icons/loader-circle"
+    import ArrowLeft from "lucide-svelte/icons/arrow-left"
+    import Download from "lucide-svelte/icons/download"
     import {
         collectionSamples,
         collectionsStore,
@@ -218,6 +225,26 @@
         }
     })
 
+    $effect(() => {
+        if (view.kind === "packs" && !packSearch.providerFilter && !packSearch.searched) {
+            fetchPopularPacks()
+        }
+    })
+
+    $effect(() => {
+        const el = viewportRef
+        if (!el) return
+        function onPacksScroll() {
+            if (view.kind !== "packs") return
+            if (packSearch.loading || !packSearch.hasMore) return
+            if (el.scrollHeight - el.scrollTop - el.clientHeight < 300) {
+                loadMorePacks()
+            }
+        }
+        el.addEventListener("scroll", onPacksScroll)
+        return () => el.removeEventListener("scroll", onPacksScroll)
+    })
+
     storeCallbacks.onbeforedataupdate = () => {
         viewportRef.scrollTo({ top: 0, behavior: "smooth" })
     }
@@ -317,7 +344,9 @@
     })
 </script>
 
-<main class="flex flex-col size-full">
+<div class="flex size-full min-h-0">
+<CollectionsSidebar />
+<main class="flex flex-col flex-grow min-w-0">
     <div class="flex flex-col p-4 gap-4">
         <div class="flex gap-4 justify-between items-center">
             {#if view.kind === "browse"}
@@ -327,6 +356,38 @@
                     class="flex-grow"
                     bind:inputRef={searchInputRef}
                 />
+                <KeySelect
+                    bind:key={queryStore.key}
+                    bind:chord_type={queryStore.chord_type}
+                    onselect={onFilterChange}
+                />
+                <BpmSelect
+                    bind:bpm={queryStore.bpm}
+                    bind:min_bpm={queryStore.min_bpm}
+                    bind:max_bpm={queryStore.max_bpm}
+                    onsubmit={onFilterChange}
+                />
+                <AssetCategorySelect
+                    bind:asset_category_slug={queryStore.asset_category_slug}
+                    onselect={onFilterChange}
+                />
+            {:else if view.kind === "packs"}
+                {#if !packSearch.providerFilter}
+                    <SearchInput
+                        bind:value={packSearch.query}
+                        onsubmit={fetchPackResults}
+                        class="flex-grow"
+                    />
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        onclick={fetchPopularPacks}
+                        title="Shuffle packs"
+                        disabled={packSearch.loading}
+                    >
+                        <Shuffle size="16" />
+                    </Button>
+                {/if}
             {:else}
                 <h2 class="flex-shrink-0 text-xl font-bold truncate max-w-[12rem]">
                     {activeCollection?.name ?? "Collection"}
@@ -336,24 +397,25 @@
                     onsubmit={() => {}}
                     class="flex-grow"
                 />
+                <KeySelect
+                    bind:key={queryStore.key}
+                    bind:chord_type={queryStore.chord_type}
+                    onselect={onFilterChange}
+                />
+                <BpmSelect
+                    bind:bpm={queryStore.bpm}
+                    bind:min_bpm={queryStore.min_bpm}
+                    bind:max_bpm={queryStore.max_bpm}
+                    onsubmit={onFilterChange}
+                />
+                <AssetCategorySelect
+                    bind:asset_category_slug={queryStore.asset_category_slug}
+                    onselect={onFilterChange}
+                />
             {/if}
-            <KeySelect
-                bind:key={queryStore.key}
-                bind:chord_type={queryStore.chord_type}
-                onselect={onFilterChange}
-            />
-            <BpmSelect
-                bind:bpm={queryStore.bpm}
-                bind:min_bpm={queryStore.min_bpm}
-                bind:max_bpm={queryStore.max_bpm}
-                onsubmit={onFilterChange}
-            />
-            <AssetCategorySelect
-                bind:asset_category_slug={queryStore.asset_category_slug}
-                onselect={onFilterChange}
-            />
         </div>
 
+        {#if view.kind === "browse"}
         <div
             class="transition-[height] ease-in-out overflow-clip"
             bind:this={tagsDrawerRef}
@@ -511,6 +573,7 @@
         </div>
         {/if}
 
+        {#if view.kind !== "packs"}
         <div class="flex flex-col gap-2">
             <Separator />
             <div
@@ -560,6 +623,7 @@
                 loading={loading.assets || loading.waveformsCount > 0}
             />
         </div>
+        {/if}
     </div>
     <ScrollArea
         class="px-4 flex-grow before:content-[''] before:absolute before:inset-x-0 before:top-0 before:h-4 before:bg-gradient-to-t before:from-transparent before:to-background before:pointer-events-none after:content-[''] after:absolute after:inset-x-0 after:bottom-0 after:h-4 after:bg-gradient-to-b after:from-transparent after:to-background after:pointer-events-none"
@@ -589,54 +653,128 @@
             }
         }}
     >
-        <div class="flex flex-col py-2 size-full">
-            {#each dataStore.sampleAssets as sampleAsset, index}
-                {@const selected =
-                    globalAudio.currentAsset?.uuid == sampleAsset.uuid}
-                <SampleListEntry
-                    {sampleAsset}
-                    {selected}
-                    playing={selected && !globalAudio.paused}
-                />
-                {#if index < dataStore.sampleAssets.length - 1}
-                    <div
-                        class={selected || index + 1 == selectedSampleIndex
-                            ? "px-2"
-                            : ""}
-                    >
-                        {#if emptyStateKind === "no-tag-match"}
-                            <Search size="48" />
-                            <p class="font-bold text-xl">No matches</p>
-                            <p class="text-sm">No sounds match the selected tags.</p>
-                        {:else if emptyStateKind === "empty-collection"}
-                            <Library size="48" />
-                            <p class="font-bold text-xl">Empty collection</p>
-                            <p class="text-sm">
-                                Add sounds from Browse using the menu on each row.
-                            </p>
-                        {:else if emptyStateKind === "offline-empty"}
-                            <WifiOff size="48" class="text-amber-500" />
-                            <p class="font-bold text-xl">You're offline</p>
-                            <p class="text-sm">
-                                {queryStore.query.trim()
-                                    ? "No saved samples match your search."
-                                    : "Save samples while online to play them here."}
-                            </p>
-                        {:else if emptyStateKind === "error"}
-                            <Ghost size="48" />
-                            <p class="font-bold text-xl">Something went wrong :/</p>
-                            <p class="text-sm">Couldn't load any samples</p>
-                            <Button onclick={fetchAssets}>Retry</Button>
-                        {:else if emptyStateKind === "welcome"}
-                            <Smile size="48" />
-                            <p class="font-bold text-xl">Hey there!</p>
-                            <p class="text-sm">Make some cool music, will ya?</p>
-                        {:else}
-                            <Search size="48" />
-                            <p class="font-bold text-xl">No results</p>
-                            <p class="text-sm">Try different keywords</p>
+        {#if view.kind === "packs"}
+            <div class="py-4 size-full flex flex-col gap-3">
+                {#if packSearch.providerFilter}
+                    <div class="flex items-center gap-2 flex-shrink-0">
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            onclick={clearProviderFilter}
+                            class="gap-1.5 text-muted-foreground"
+                        >
+                            <ArrowLeft size="14" />
+                            Back
+                        </Button>
+                        <span class="text-sm font-semibold">{packSearch.providerFilter.name}</span>
+                        {#if !packSearch.loading && packSearch.results.length > 0}
+                            <span class="text-xs text-muted-foreground">({packSearch.results.length} packs)</span>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onclick={downloadProviderPacks}
+                                disabled={packSearch.providerDownloading}
+                                class="ml-auto gap-1.5"
+                            >
+                                {#if packSearch.providerDownloading}
+                                    <LoaderCircle size="14" class="animate-spin" />
+                                    Downloading…
+                                {:else}
+                                    <Download size="14" />
+                                    Download all {packSearch.results.length} packs
+                                {/if}
+                            </Button>
                         {/if}
                     </div>
+                {/if}
+                {#if packSearch.loading && packSearch.results.length === 0}
+                    <div class="flex justify-center items-center py-16 text-muted-foreground">
+                        <LoaderCircle class="animate-spin" size="32" />
+                    </div>
+                {:else if packSearch.results.length > 0}
+                    <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                        {#each packSearch.results as pack (pack.uuid)}
+                            <div class="flex flex-col gap-2 rounded-lg p-2">
+                                <button
+                                    class="block w-full rounded-md hover:opacity-90 transition-opacity"
+                                    onclick={() => openPackDetail(pack)}
+                                    aria-label="Browse {pack.name.split('/').at(-1) ?? pack.name}"
+                                >
+                                    {#if pack.files[0]?.url}
+                                        <img
+                                            src={pack.files[0].url}
+                                            alt={pack.name}
+                                            class="w-full aspect-square object-cover rounded-md"
+                                            draggable="false"
+                                        />
+                                    {:else}
+                                        <div class="w-full aspect-square bg-muted rounded-md flex items-center justify-center">
+                                            <Layers size="32" class="text-muted-foreground" />
+                                        </div>
+                                    {/if}
+                                </button>
+                                <div class="min-w-0">
+                                    <button
+                                        class="text-sm font-medium truncate text-left w-full hover:underline"
+                                        onclick={() => openPackDetail(pack)}
+                                    >
+                                        {pack.name.split("/").at(-1) ?? pack.name}
+                                    </button>
+                                    {#if pack.provider?.name}
+                                        {#if !packSearch.providerFilter && pack.provider_uuid}
+                                            <button
+                                                class="text-xs text-muted-foreground truncate hover:text-foreground hover:underline text-left w-full block"
+                                                onclick={() => filterByProvider(pack.provider_uuid!, pack.provider!.name)}
+                                            >
+                                                {pack.provider.name}
+                                            </button>
+                                        {:else}
+                                            <p class="text-xs text-muted-foreground truncate">{pack.provider.name}</p>
+                                        {/if}
+                                    {/if}
+                                </div>
+                            </div>
+                        {/each}
+                    </div>
+                    {#if packSearch.loading}
+                        <div class="flex justify-center py-6">
+                            <LoaderCircle class="animate-spin text-muted-foreground" size="24" />
+                        </div>
+                    {/if}
+                {:else if packSearch.searched}
+                    <div class="flex flex-col gap-2 justify-center items-center py-16 text-muted-foreground">
+                        <Layers size="48" />
+                        <p class="font-bold text-xl">No packs found</p>
+                        <p class="text-sm">Try a different name</p>
+                    </div>
+                {:else}
+                    <div class="flex flex-col gap-2 justify-center items-center py-16 text-muted-foreground">
+                        <Layers size="48" />
+                        <p class="font-bold text-xl">Search for a pack</p>
+                        <p class="text-sm">Type a pack name and press Enter</p>
+                    </div>
+                {/if}
+            </div>
+        {:else}
+        <div class="flex flex-col py-2 size-full">
+            {#if shownSamples.length > 0}
+                {#each shownSamples as sampleAsset, index}
+                    {@const selected =
+                        globalAudio.currentAsset?.uuid == sampleAsset.uuid}
+                    <SampleListEntry
+                        {sampleAsset}
+                        {selected}
+                        playing={selected && !globalAudio.paused}
+                    />
+                    {#if index < shownSamples.length - 1}
+                        <div
+                            class={selected || index + 1 == selectedSampleIndex
+                                ? "px-2"
+                                : ""}
+                        >
+                            <Separator />
+                        </div>
+                    {/if}
                 {/each}
                 {#if view.kind === "browse" && loading.fetchError && dataStore.sampleAssets.length > 0}
                     <div
@@ -652,12 +790,30 @@
                 <div
                     class="flex flex-col gap-2 justify-center items-center size-full text-muted-foreground"
                 >
-                    {#if loading.fetchError}
+                    {#if emptyStateKind === "no-tag-match"}
+                        <Search size="48" />
+                        <p class="font-bold text-xl">No matches</p>
+                        <p class="text-sm">No sounds match the selected tags.</p>
+                    {:else if emptyStateKind === "empty-collection"}
+                        <Library size="48" />
+                        <p class="font-bold text-xl">Empty collection</p>
+                        <p class="text-sm">
+                            Add sounds from Browse using the menu on each row.
+                        </p>
+                    {:else if emptyStateKind === "offline-empty"}
+                        <WifiOff size="48" class="text-amber-500" />
+                        <p class="font-bold text-xl">You're offline</p>
+                        <p class="text-sm">
+                            {queryStore.query.trim()
+                                ? "No saved samples match your search."
+                                : "Save samples while online to play them here."}
+                        </p>
+                    {:else if emptyStateKind === "error"}
                         <Ghost size="48" />
                         <p class="font-bold text-xl">Something went wrong :/</p>
                         <p class="text-sm">Couldn't load any samples</p>
                         <Button onclick={fetchAssets}>Retry</Button>
-                    {:else if loading.beforeFirstLoad}
+                    {:else if emptyStateKind === "welcome"}
                         <Smile size="48" />
                         <p class="font-bold text-xl">Hey there!</p>
                         <p class="text-sm">Make some cool music, will ya?</p>
@@ -667,18 +823,11 @@
                         <p class="text-sm">Try different keywords</p>
                     {/if}
                 </div>
-            {/each}
-            {#if loading.fetchError && dataStore.sampleAssets.length > 0}
-                <div
-                    class="flex flex-col py-8 gap-2 justify-center items-center text-muted-foreground"
-                >
-                    <Ghost size="48" />
-                    <p class="font-bold text-xl">Something went wrong :/</p>
-                    <p class="text-sm">Couldn't load any more samples</p>
-                    <Button onclick={fetchAssets}>Retry</Button>
-                </div>
             {/if}
         </div>
+        {/if}
     </ScrollArea>
     <AudioPlayer onprev={gotoPrev} onnext={gotoNext} />
 </main>
+</div>
+<PackDetailDialog />

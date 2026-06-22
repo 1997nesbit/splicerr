@@ -1,10 +1,11 @@
-import { querySplice, SamplesSearch } from "$lib/splice/api"
+import { querySplice, SamplesSearch, PacksSearch } from "$lib/splice/api"
 import { descrambleSample } from "$lib/splice/descrambler"
 import type {
     AssetCategorySlug,
     AssetSortType,
     ChordType,
     Key,
+    PackAsset,
     SampleAsset,
     SamplesSearchResponse,
     SortOrder,
@@ -15,7 +16,9 @@ import { loading } from "./loading.svelte"
 import { fetch } from "@tauri-apps/plugin-http"
 import { getBlobFromLikedCache } from "./liked-cache"
 import { network } from "./network.svelte"
-import { exists, mkdir, writeFile } from "@tauri-apps/plugin-fs"
+import { mkdir, writeFile } from "@tauri-apps/plugin-fs"
+import { config } from "./config.svelte"
+import { toast, downloadToast, updateToastProgress, completeToast } from "./toasts.svelte"
 
 const sanitizeName = (s: string) => s.replace(/[^a-zA-Z0-9#_\-\.\/]/g, "_")
 import { pitchShiftAudioBuffer, semitonesFor } from "./transpose.svelte"
@@ -257,6 +260,22 @@ export function clearTransposedCache() {
     console.info("🧹 Cleared transposed sample cache")
 }
 
+function getShotSubdir(sample: SampleAsset): string {
+    const labels = sample.tags?.map((t) => t.label.toLowerCase()).join(" ") ?? ""
+    if (labels.includes("kick")) return "Kicks"
+    if (labels.includes("snare") || labels.includes("clap")) return "Snares & Claps"
+    if (labels.includes("hi-hat") || labels.includes("hihat") || labels.includes(" hat")) return "Hi-Hats"
+    if (labels.includes("tom") || labels.includes("cymbal")) return "Toms & Cymbals"
+    if (labels.includes("perc")) return "Percussion"
+    if (labels.includes("bass")) return "Bass"
+    if (labels.includes("synth")) return "Synth"
+    if (labels.includes("vocal") || labels.includes("voice")) return "Vocals"
+    if (labels.includes("guitar")) return "Guitar"
+    if (labels.includes("piano") || labels.includes("keys")) return "Piano & Keys"
+    if (labels.includes("fx") || labels.includes("effect")) return "FX"
+    return "Other"
+}
+
 export async function saveSampleToDisk(
     sampleAsset: SampleAsset,
     options?: { silent?: boolean }
@@ -268,14 +287,21 @@ export async function saveSampleToDisk(
 
     const packName = sanitizeName(sampleAsset.parents?.items[0]?.name ?? "Unknown Pack")
     const filename = sampleAsset.name.split("/").at(-1) ?? sampleAsset.name
-    const packDir = `${config.samples_dir}/${packName}`
+    const isLoop = sampleAsset.asset_category_slug === "loop"
+    const categorySubdir = isLoop ? "Loops" : "One Shots"
+    const innerSubdir = isLoop
+        ? sampleAsset.bpm ? `${Math.round(sampleAsset.bpm)} BPM` : null
+        : getShotSubdir(sampleAsset)
+    const packDir = innerSubdir
+        ? `${config.samples_dir}/${packName}/${categorySubdir}/${innerSubdir}`
+        : `${config.samples_dir}/${packName}/${categorySubdir}`
     const fullPath = `${packDir}/${filename}`
 
     loading.samples.add(sampleAsset.uuid)
     loading.samplesCount++
 
     try {
-        if (!(await exists(packDir))) await mkdir(packDir)
+        await mkdir(packDir, { recursive: true })
 
         let data: Uint8Array
         const cachedUrl = dataStore.descrambledSamples.get(sampleAsset.uuid)
@@ -337,6 +363,189 @@ export async function saveSampleToDisk(
 }
 
 // ─── Pack detail ──────────────────────────────────────────────────────────────
+
+export const packSearch = $state({
+    query: "",
+    results: [] as PackAsset[],
+    loading: false,
+    searched: false,
+    hasMore: false,
+    page: 1,
+    providerFilter: null as { uuid: string; name: string } | null,
+    providerDownloading: false,
+})
+
+export async function fetchPopularPacks() {
+    if (packSearch.loading) return
+    packSearch.loading = true
+    packSearch.searched = true
+    packSearch.hasMore = false
+    packSearch.page = 1
+    packSearch.results = []
+    try {
+        const response = await querySplice(PacksSearch, {
+            tags: [],
+            page: 1,
+            limit: 30,
+            sort: "popularity",
+        })
+        const result = (response as any)?.data?.assetsSearch
+        const items = (result?.items ?? []) as PackAsset[]
+        const total: number = result?.response_metadata?.records ?? 0
+        packSearch.results = items
+        packSearch.hasMore = items.length < total
+    } catch {
+        packSearch.results = []
+    } finally {
+        packSearch.loading = false
+    }
+}
+
+export async function fetchPackResults() {
+    const q = packSearch.query.trim()
+    if (!q && !packSearch.providerFilter) {
+        packSearch.results = []
+        packSearch.searched = false
+        packSearch.hasMore = false
+        packSearch.page = 1
+        return
+    }
+    packSearch.loading = true
+    packSearch.searched = true
+    packSearch.hasMore = false
+    packSearch.page = 1
+    try {
+        const vars: Record<string, unknown> = {
+            tags: [],
+            page: 1,
+            limit: 30,
+            sort: packSearch.providerFilter ? "popularity" : "relevance",
+        }
+        if (packSearch.providerFilter) {
+            vars.query = packSearch.providerFilter.name
+        } else if (q) {
+            vars.query = q
+        }
+        const response = await querySplice(PacksSearch, vars)
+        const result = (response as any)?.data?.assetsSearch
+        const items = (result?.items ?? []) as PackAsset[]
+        const total: number = result?.response_metadata?.records ?? 0
+        packSearch.results = items
+        packSearch.hasMore = items.length < total
+    } catch {
+        packSearch.results = []
+    } finally {
+        packSearch.loading = false
+    }
+}
+
+export async function loadMorePacks() {
+    if (packSearch.loading || !packSearch.hasMore) return
+    packSearch.loading = true
+    const nextPage = packSearch.page + 1
+    const snapshotQuery = packSearch.query.trim()
+    const snapshotProvider = packSearch.providerFilter?.name
+    try {
+        const vars: Record<string, unknown> = {
+            tags: [],
+            page: nextPage,
+            limit: 30,
+            sort: (packSearch.providerFilter || !snapshotQuery) ? "popularity" : "relevance",
+        }
+        if (packSearch.providerFilter) {
+            vars.query = packSearch.providerFilter.name
+        } else if (snapshotQuery) {
+            vars.query = snapshotQuery
+        }
+        const response = await querySplice(PacksSearch, vars)
+        // Discard if context changed while fetching
+        if (packSearch.query.trim() !== snapshotQuery || packSearch.providerFilter?.name !== snapshotProvider) return
+        const result = (response as any)?.data?.assetsSearch
+        const newItems = (result?.items ?? []) as PackAsset[]
+        const total: number = result?.response_metadata?.records ?? 0
+        packSearch.results.push(...newItems)
+        packSearch.hasMore = packSearch.results.length < total
+        packSearch.page = nextPage
+    } catch {
+        // keep existing results on error
+    } finally {
+        packSearch.loading = false
+    }
+}
+
+export function filterByProvider(uuid: string, name: string) {
+    packSearch.providerFilter = { uuid, name }
+    packSearch.query = ""
+    fetchPackResults()
+}
+
+export function clearProviderFilter() {
+    packSearch.providerFilter = null
+    packSearch.query = ""
+    fetchPopularPacks()
+}
+
+async function fetchAllPackSamples(packUuid: string): Promise<SampleAsset[]> {
+    const results: SampleAsset[] = []
+    let total = Infinity
+    let page = 1
+    while (results.length < total) {
+        const response = await querySplice(SamplesSearch, {
+            parent_asset_uuid: packUuid,
+            page,
+            limit: PER_PAGE,
+            sort: "popularity",
+            order: "DESC",
+            random_seed: null,
+            query: null,
+            tags: [],
+            key: null,
+            chord_type: null,
+            bpm: null,
+            min_bpm: null,
+            max_bpm: null,
+            asset_category_slug: null,
+            ac_uuid: null,
+        })
+        const result = (response as SamplesSearchResponse).data.assetsSearch
+        results.push(...result.items)
+        total = result.response_metadata.records
+        page++
+        if (result.items.length === 0) break
+    }
+    return results
+}
+
+export async function downloadProviderPacks() {
+    if (!packSearch.providerFilter || !config.samples_dir) return
+    packSearch.providerDownloading = true
+    const packs = [...packSearch.results]
+    const providerName = packSearch.providerFilter.name
+    const toastId = downloadToast({ title: `${providerName} — 0/${packs.length} packs`, total: packs.length, unit: "files" })
+    try {
+        for (let i = 0; i < packs.length; i++) {
+            updateToastProgress(toastId, i, packs.length)
+            const samples = await fetchAllPackSamples(packs[i].uuid)
+            for (const sample of samples) {
+                await saveSampleToDisk(sample, { silent: true })
+            }
+        }
+        completeToast(toastId, {
+            title: providerName,
+            description: `${packs.length} packs saved to ${config.samples_dir}`,
+            variant: "success",
+            duration: 10000,
+        })
+    } catch (e) {
+        completeToast(toastId, {
+            title: "Download failed",
+            description: e instanceof Error ? e.message : String(e),
+            variant: "error",
+        })
+    } finally {
+        packSearch.providerDownloading = false
+    }
+}
 
 export const packDetailStore = $state({
     open: false,

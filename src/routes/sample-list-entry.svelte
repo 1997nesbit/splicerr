@@ -10,7 +10,9 @@
     import Button from "$lib/components/ui/button/button.svelte"
     import * as Tooltip from "$lib/components/ui/tooltip/index.js"
     import LoaderCircle from "lucide-svelte/icons/loader-circle"
-    import { dataStore, fetchAssets } from "$lib/shared/store.svelte"
+    import { dataStore, fetchAssets, openPackDetail } from "$lib/shared/store.svelte"
+    import Layers from "lucide-svelte/icons/layers"
+    import { isPreviewed } from "$lib/shared/previewed.svelte"
     import { cn, formatKey } from "$lib/utils"
     import { loading } from "$lib/shared/loading.svelte"
     import { assetIcons } from "$lib/shared/icons.svelte"
@@ -35,17 +37,26 @@
         LIKES_UUID,
     } from "$lib/shared/collections.svelte"
     import Library from "lucide-svelte/icons/library"
+    import Download from "lucide-svelte/icons/download"
+    import { buttonVariants } from "$lib/components/ui/button"
+    import { saveSampleToDisk } from "$lib/shared/store.svelte"
 
     let {
         class: className,
         selected,
         playing,
         sampleAsset,
+        collectionUuid = null,
+        hidePackButton = false,
+        onremove,
     }: {
         class?: string
         selected: boolean
         playing: boolean
         sampleAsset: SampleAsset
+        collectionUuid?: string | null
+        hidePackButton?: boolean
+        onremove?: () => void
     } = $props()
 
     let menuOpen = $state(false)
@@ -88,16 +99,34 @@
 <button
     class={cn(
         "flex gap-4 items-center justify-between p-1 rounded-lg focus:outline-none cursor-grab",
-        selected && "bg-muted",
+        selected ? "bg-muted" : isPreviewed(sampleAsset.uuid) && "bg-amber-500/10",
         className
     )}
     id={`sample-list-entry-${sampleAsset.uuid}`}
     draggable="true"
     tabindex="-1"
     onmousedown={() => globalAudio.selectSampleAsset(sampleAsset, false)}
-    ondragstart={(event) => handleSampleDrag(event, sampleAsset)}
+    ondragstart={(event) => { prefetchSampleDrag(sampleAsset); handleSampleDrag(event, sampleAsset) }}
 >
-    <PackPreview {pack} />
+    <div class="relative flex-shrink-0">
+        <PackPreview {pack} />
+        {#if isPreviewed(sampleAsset.uuid)}
+            <span class="absolute -bottom-1 -right-1 size-4 rounded-full bg-amber-500 text-white flex items-center justify-center">
+                <Headphones size="9" />
+            </span>
+        {/if}
+    </div>
+    {#if !hidePackButton}
+        <Button
+            variant="ghost"
+            size="icon"
+            class="size-8 text-muted-foreground flex-shrink-0 -ml-2"
+            title="Browse pack"
+            onclick={(e) => { e.stopPropagation(); if (pack) openPackDetail(pack) }}
+        >
+            <Layers size="14" />
+        </Button>
+    {/if}
     <Button
         variant="ghost"
         bind:ref={playButtonRef}

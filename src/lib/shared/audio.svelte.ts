@@ -1,6 +1,7 @@
 import type { PackAsset, SampleAsset } from "$lib/splice/types"
 import { loading } from "$lib/shared/loading.svelte"
 import { config } from "$lib/shared/config.svelte"
+import { markPreviewed } from "$lib/shared/previewed.svelte"
 import {
     dataStore,
     freeDescrambledSample,
@@ -73,6 +74,7 @@ export const globalAudio = $state({
         }
 
         this.currentAsset = sampleAsset
+        markPreviewed(sampleAsset.uuid)
         this.ref.src = await getPlaybackSampleURL(sampleAsset)
         if (this.currentAsset.uuid != sampleAsset.uuid) {
             return
